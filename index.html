@@ -206,6 +206,7 @@ dialog::backdrop{background:rgba(8,16,22,.55)}
 .syncnote{margin:0 0 8px;font-weight:600;color:#1a7f5a}.syncnote.warn{color:#b45309}
 .clist{display:flex;flex-direction:column;gap:8px;margin-top:10px}.crow{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line,#d8dee4);border-radius:10px}.crow.on{border-color:var(--loc,#1FA6A0);background:color-mix(in srgb,var(--loc,#1FA6A0) 8%,transparent)}.crow .cn{flex:1;min-width:0;line-height:1.3}.crow input{width:84px;flex:none;font-size:18px;text-align:right}.csum{margin-top:10px;font-weight:600}
 .kbar{background:var(--loc);color:#0F2430;font:700 17px var(--f-head);padding:10px 16px;margin:-6px -6px 14px;border-radius:0 0 12px 12px;display:flex;align-items:center;gap:8px}
+.who button{background:transparent;color:#cfe3e3;border:1px solid #3d5a63;margin-top:6px}.who button:hover{background:#1c3a44}
 </style>
 </head>
 <body>
@@ -2728,20 +2729,29 @@ async function doPush() {
   const rev0 = store.rev; let body, sent = [];
   let sentC = [];
   if (ui.kiosk) { sent = pendingMoves(); sentC = pendingCounts(); if (!sent.length && !sentC.length) return; body = { mode: 'append', moves: sent, counts: sentC }; }
-  else { if (!cfg.dirty) return; body = { mode: 'full', store }; }
+  else { if (!cfg.dirty) return; if (!authed()) { ui.sync = 'err'; renderRail(); return; } body = { mode: 'full', store, token: cfg.session.token }; }
   pushing = true; ui.sync = 'busy'; renderRail();
   try {
     const r = await fetch(cfg.syncUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) });
     let res = null; try { res = await r.json(); } catch (e) { }
+    if (res && res.ok === false && res.error === 'auth') { cfg.session = null; saveCfg(); ui.skipLogin = false; throw new Error('auth'); }
     if (!r.ok || !res || res.ok !== true) throw new Error('bad response');
     ui.sync = 'on';
     if (ui.kiosk) { const ids = new Set(sent.map(m => m.id)), idc = new Set(sentC.map(c => c.id)); store.moves.forEach(m => { if (ids.has(m.id)) delete m.q; }); store.counts.forEach(c => { if (idc.has(c.id)) delete c.q; }); save(); }
     else if (store.rev === rev0) { cfg.dirty = false; saveCfg(); }
     if (res.added && !ui.kiosk) pull(true);
-  } catch (e) { ui.sync = 'err'; }
+  } catch (e) { ui.sync = 'err'; ui.syncErr = (e && e.message) || 'error'; if (e && e.message === 'auth') { pushing = false; render(); return; } }
   pushing = false; renderRail(); if (ui.kiosk) render();
   if (ui.again) { ui.again = false; push(); }
 }
+async function api(body, ms) {
+  const ctl = ms ? new AbortController() : null, tm = ms ? setTimeout(() => ctl.abort(), ms) : 0;
+  try { const r = await fetch(cfg.syncUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body), signal: ctl ? ctl.signal : undefined }); return await r.json(); }
+  finally { clearTimeout(tm); }
+}
+const authed = () => !!(cfg.session && cfg.session.token);
+const needLogin = () => !ui.kiosk && !!cfg.syncUrl && !authed() && !ui.skipLogin;
+function logout() { const t = cfg.session && cfg.session.token; cfg.session = null; saveCfg(); if (t && cfg.syncUrl) api({ mode: 'logout', token: t }).catch(() => { }); render(); }
 async function pull(silent, ms) {
   if (!cfg.syncUrl) return;
   if (ui.kiosk ? pendingAny() : cfg.dirty) push();
@@ -2775,20 +2785,79 @@ async function pull(silent, ms) {
 }
 const APPS_SCRIPT = `// วางใน Code.gs แล้ว Deploy > New deployment > Web app
 // Execute as: Me   |   Who has access: Anyone
-// รวมรายการเบิกจากหลายเครื่องโดยไม่เขียนทับกัน (ใช้ LockService กันบันทึกชนกัน)
+// รวมรายการเบิกจากหลายเครื่องโดยไม่เขียนทับกัน + แอดมินเข้าสู่ระบบด้วยรหัสที่ส่งทางอีเมล
 const NAME = 'ppe-store-data.json';
+const SESSION_DAYS = 30;
 function f_() { const it = DriveApp.getFilesByName(NAME); return it.hasNext() ? it.next() : DriveApp.createFile(NAME, '{}'); }
 function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+function props_() { return PropertiesService.getScriptProperties(); }
+function cache_() { return CacheService.getScriptCache(); }
+function owner_() { return String(Session.getEffectiveUser().getEmail() || '').toLowerCase(); }
+function admins_() {
+  let a = []; try { a = JSON.parse(props_().getProperty('ADMINS') || '[]'); } catch (x) { a = []; }
+  const o = owner_(); if (o && a.indexOf(o) < 0) a.unshift(o);
+  return a;
+}
+function hash_(s) { return Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s)); }
+function rand_(n) { const c = 'abcdefghijkmnpqrstuvwxyz23456789'; let s = ''; for (let i = 0; i < n; i++) s += c.charAt(Math.floor(Math.random() * c.length)); return s; }
+function auth_(token) {
+  if (!token) return null;
+  const raw = props_().getProperty('T_' + hash_(token)); if (!raw) return null;
+  let t; try { t = JSON.parse(raw); } catch (x) { return null; }
+  if (t.exp < Date.now() || admins_().indexOf(t.email) < 0) return null;
+  return t.email;
+}
+// รันฟังก์ชันนี้ 1 ครั้งในตัวแก้ไข เพื่ออนุญาตสิทธิ์ส่งอีเมลและเข้าถึง Drive
+function authorizeAccess() { MailApp.getRemainingDailyQuota(); DriveApp.getRootFolder(); }
 function doGet() {
   return ContentService.createTextOutput(f_().getBlob().getDataAsString() || '{}').setMimeType(ContentService.MimeType.JSON);
 }
+function acct_(b) {
+  const email = String(b.email || '').trim().toLowerCase(), c = cache_();
+  if (b.mode === 'otp_request') {
+    if (email.indexOf('@') < 1 || email.indexOf(' ') >= 0) return out_({ ok: false, error: 'email' });
+    if (admins_().indexOf(email) >= 0 && !c.get('rq_' + email)) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      c.put('otp_' + email, hash_(code + email), 600); c.put('try_' + email, '0', 600); c.put('rq_' + email, '1', 60);
+      MailApp.sendEmail({ to: email, subject: 'รหัสเข้าสู่ระบบ PPE Store: ' + code, body: 'รหัสเข้าสู่ระบบแอดมินของคุณคือ ' + code + ' (ใช้ได้ 10 นาที) — ถ้าคุณไม่ได้ขอรหัสนี้ ไม่ต้องทำอะไร' });
+    }
+    return out_({ ok: true });
+  }
+  if (b.mode === 'otp_verify') {
+    const want = c.get('otp_' + email), n = Number(c.get('try_' + email) || 0);
+    if (!want) return out_({ ok: false, error: 'expired' });
+    if (n >= 5) { c.remove('otp_' + email); return out_({ ok: false, error: 'locked' }); }
+    if (hash_(String(b.code || '').trim() + email) !== want) { c.put('try_' + email, String(n + 1), 600); return out_({ ok: false, error: 'wrong' }); }
+    c.remove('otp_' + email);
+    if (admins_().indexOf(email) < 0) return out_({ ok: false, error: 'auth' });
+    const token = rand_(40), P = props_(), all = P.getProperties(), now = Date.now();
+    Object.keys(all).forEach(k => { if (k.indexOf('T_') === 0) { try { if (JSON.parse(all[k]).exp < now) P.deleteProperty(k); } catch (x) { P.deleteProperty(k); } } });
+    P.setProperty('T_' + hash_(token), JSON.stringify({ email: email, exp: now + SESSION_DAYS * 86400000 }));
+    return out_({ ok: true, token: token, email: email });
+  }
+  const me = auth_(b.token);
+  if (!me) return out_({ ok: false, error: 'auth' });
+  if (b.mode === 'whoami') return out_({ ok: true, email: me, owner: owner_() === me });
+  if (b.mode === 'logout') { props_().deleteProperty('T_' + hash_(b.token)); return out_({ ok: true }); }
+  if (b.mode === 'admins_get') return out_({ ok: true, admins: admins_(), owner: owner_() });
+  if (b.mode === 'admins_set') {
+    const seen = {}, list = [];
+    (b.list || []).forEach(x => { const e = String(x || '').trim().toLowerCase(); if (e.indexOf('@') > 0 && e.indexOf(' ') < 0 && !seen[e] && e !== owner_()) { seen[e] = 1; list.push(e); } });
+    props_().setProperty('ADMINS', JSON.stringify(list));
+    return out_({ ok: true, admins: admins_(), owner: owner_() });
+  }
+  return out_({ ok: false, error: 'mode' });
+}
 function doPost(e) {
+  const b = JSON.parse(e.postData.contents);
+  if (['otp_request', 'otp_verify', 'whoami', 'logout', 'admins_get', 'admins_set'].indexOf(b.mode) >= 0) return acct_(b);
+  if (b.mode !== 'append' && !auth_(b.token)) return out_({ ok: false, error: 'auth' });
   const lock = LockService.getScriptLock(); lock.waitLock(25000);
   try {
     const f = f_(); let cur = {};
     try { cur = JSON.parse(f.getBlob().getDataAsString() || '{}'); } catch (x) { cur = {}; }
     cur.moves = cur.moves || [];
-    const b = JSON.parse(e.postData.contents); let added = 0;
+    let added = 0;
     const clean = m => { delete m.q; return m; };
     if (b.mode === 'append') {
       const have = {}; cur.moves.forEach(m => have[m.id] = 1);
@@ -2902,16 +2971,66 @@ function renderRail() {
   const nm = h('input', { type: 'text', value: cfg.user || '', placeholder: 'ชื่อผู้ใช้งาน (แอดมิน)', 'aria-label': 'ชื่อผู้ใช้งาน' });
   nm.addEventListener('change', () => { cfg.user = nm.value.trim(); saveCfg(); });
   r.append(h('div', { class: 'who' }, h('label', {}, 'บันทึกการทำรายการในชื่อ'), nm));
+  if (cfg.syncUrl && authed()) r.append(h('div', { class: 'who' }, h('label', {}, 'เข้าสู่ระบบ: ' + (cfg.session.email || '')), h('button', { class: 'btn sm sec', onclick: logout }, 'ออกจากระบบ')));
   const st = cfg.syncUrl ? ({ on: 'ซิงค์แล้ว', busy: 'กำลังซิงค์…', err: 'ออฟไลน์', off: 'รอซิงค์' })[ui.sync] : 'เก็บในเครื่องนี้เท่านั้น';
   r.append(h('div', { class: 'syncline' }, h('i', { class: 'dot ' + (cfg.syncUrl ? ui.sync : '') }), st));
   $('#tbloc').textContent = locName(cfg.loc);
 }
+/* ============ เข้าสู่ระบบแอดมิน (รหัสทางอีเมล) ============ */
+function loginPage() {
+  const L = ui.login = ui.login || { step: 'email', email: cfg.lastEmail || '', msg: '', err: '', fail: false };
+  const box = h('div', { class: 'card', style: 'max-width:420px;margin:8vh auto 0' });
+  let busy = false;
+  const skip = () => h('button', { class: 'btn sm sec', style: 'margin-top:10px', onclick: () => { ui.skipLogin = true; render(); } }, 'ใช้งานต่อโดยไม่เข้าสู่ระบบ (ชั่วคราว)');
+  function draw() {
+    box.textContent = '';
+    box.append(h('h2', {}, 'เข้าสู่ระบบแอดมิน'), h('p', { class: 'hint' }, 'PPE Store — เฉพาะผู้ดูแลระบบ ระบบจะส่งรหัส 6 หลักไปที่อีเมลของคุณ'));
+    if (L.step === 'email') {
+      const em = h('input', { type: 'email', placeholder: 'อีเมลแอดมิน', value: L.email, autocomplete: 'email', 'aria-label': 'อีเมล' }); em.addEventListener('input', () => L.email = em.value);
+      const b = h('button', { class: 'btn big', style: 'width:100%;margin-top:10px', onclick: send }, 'ส่งรหัสเข้าอีเมล');
+      em.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+      box.append(field('อีเมล', em), b);
+    } else {
+      const cd = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6', placeholder: 'รหัส 6 หลัก', autocomplete: 'one-time-code', 'aria-label': 'รหัส', style: 'font-size:22px;letter-spacing:6px;text-align:center' }); cd.addEventListener('keydown', e => { if (e.key === 'Enter') verify(cd.value); });
+      box.append(h('p', { class: 'hint' }, 'ส่งรหัสไปที่ ' + L.email + ' แล้ว (ถ้าไม่เห็น ตรวจในสแปม) รหัสใช้ได้ 10 นาที ถ้าอีเมลนี้ไม่ใช่แอดมินจะไม่ได้รับรหัส'), field('รหัส', cd),
+        h('button', { class: 'btn big', style: 'width:100%;margin-top:10px', onclick: () => verify(cd.value) }, 'เข้าสู่ระบบ'),
+        h('div', { class: 'bar', style: 'margin-top:10px' }, h('button', { class: 'btn sm sec', onclick: () => { L.step = 'email'; L.err = ''; draw(); } }, '← เปลี่ยนอีเมล'), h('button', { class: 'btn sm sec', onclick: send }, 'ส่งรหัสใหม่')));
+      setTimeout(() => cd.focus(), 50);
+    }
+    if (L.err) box.append(h('p', { class: 'syncnote warn', style: 'margin-top:10px' }, L.err));
+    if (L.fail) box.append(skip());
+  }
+  async function send() {
+    if (busy) return; const em = (L.email || '').trim().toLowerCase();
+    if (em.indexOf('@') < 1 || em.indexOf('.') < 0) { L.err = 'กรอกอีเมลให้ถูกต้อง'; draw(); return; }
+    busy = true; L.err = 'กำลังส่งรหัส…'; L.fail = false; draw();
+    try {
+      const r = await api({ mode: 'otp_request', email: em }, 20000);
+      if (!r || r.ok !== true) throw new Error('unsupported');
+      L.email = em; L.step = 'code'; L.err = '';
+    } catch (e) { L.err = 'ติดต่อระบบกลางไม่ได้ หรือโค้ด Apps Script ยังไม่ใช่เวอร์ชันล่าสุด (ต้องอัปเดตแล้ว Deploy เวอร์ชันใหม่ และกดอนุญาตสิทธิ์ส่งอีเมล)'; L.fail = true; }
+    busy = false; draw();
+  }
+  async function verify(code) {
+    if (busy) return; code = String(code || '').trim(); if (!code) { L.err = 'กรอกรหัส'; draw(); return; }
+    busy = true; L.err = 'กำลังตรวจสอบ…'; draw();
+    try {
+      const r = await api({ mode: 'otp_verify', email: L.email, code }, 20000);
+      if (r && r.ok === true && r.token) { cfg.session = { email: r.email, token: r.token }; cfg.lastEmail = r.email; saveCfg(); ui.login = null; busy = false; render(); toast('เข้าสู่ระบบแล้ว'); pull(true); if (cfg.dirty) push(); return; }
+      const m = { wrong: 'รหัสไม่ถูกต้อง', expired: 'รหัสหมดอายุหรือยังไม่ได้ขอรหัส — กด "ส่งรหัสใหม่"', locked: 'ใส่รหัสผิดเกินกำหนด — กด "ส่งรหัสใหม่"', auth: 'อีเมลนี้ไม่มีสิทธิ์แอดมิน' };
+      L.err = (r && m[r.error]) || 'เข้าสู่ระบบไม่สำเร็จ';
+    } catch (e) { L.err = 'ติดต่อระบบกลางไม่ได้ ลองใหม่อีกครั้ง'; }
+    busy = false; draw();
+  }
+  draw();
+  return h('div', {}, box);
+}
 function render() {
   const y = window.scrollY;
   const l = locById(cfg.loc); document.documentElement.style.setProperty('--loc', l ? l.color : '#1FA6A0');
-  document.body.classList.toggle('kiosk', isKiosk()); if (isKiosk()) ui.page = ui.kioskMode === 'count' ? 'count' : 'req';
+  const lg = needLogin(); document.body.classList.toggle('kiosk', isKiosk() || lg); if (isKiosk()) ui.page = ui.kioskMode === 'count' ? 'count' : 'req';
   renderRail();
-  const v = $('#view'); v.textContent = ''; if (isKiosk()) v.append(h('div', { class: 'kbar' }, '● ' + locName(cfg.loc))); v.append(PAGES[ui.page]());
+  const v = $('#view'); v.textContent = ''; if (isKiosk()) v.append(h('div', { class: 'kbar' }, '● ' + locName(cfg.loc))); v.append(lg ? loginPage() : PAGES[ui.page]());
   window.scrollTo(0, y);
 }
 function printDoc(title, body) {
@@ -3039,7 +3158,7 @@ function finishBtn(onDone) {
 function syncNote() {
   if (!isKiosk()) return null;
   if (!cfg.syncUrl) return h('p', { class: 'syncnote warn' }, '⚠ เครื่องนี้ยังไม่ได้เชื่อมต่อระบบกลาง ข้อมูลที่บันทึกจะไม่ถึงแอดมิน — แจ้งแอดมินให้สร้าง QR/ลิงก์ใหม่');
-  if (pendingAny()) return h('p', { class: 'syncnote ' + (ui.sync === 'err' ? 'warn' : '') }, ui.sync === 'err' ? '⚠ ส่งข้อมูลไม่สำเร็จ ยังไม่ถึงแอดมิน — อย่าปิดหน้านี้ ระบบจะลองส่งใหม่เอง' : 'กำลังส่งข้อมูลถึงแอดมิน…');
+  if (pendingAny()) return h('p', { class: 'syncnote ' + (ui.sync === 'err' ? 'warn' : '') }, ui.sync === 'err' ? '⚠ ส่งข้อมูลไม่สำเร็จ ยังไม่ถึงแอดมิน — อย่าปิดหน้านี้ ระบบจะลองส่งใหม่เอง (' + (ui.syncErr || 'error') + ')' : 'กำลังส่งข้อมูลถึงแอดมิน…');
   return h('p', { class: 'syncnote ok' }, '✓ ส่งข้อมูลถึงแอดมินแล้ว');
 }
 PAGES.req = function () {
@@ -3544,6 +3663,37 @@ function kioskLink(l, mode) {
     qbox, h('input', { type: 'text', value: url, readonly: true, onclick: e => e.target.select() })),
     [h('button', { class: 'btn sec', onclick: closeDlg }, 'ปิด'), h('button', { class: 'btn sec', onclick: printQr }, 'พิมพ์ QR'), h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'), () => toast('คัดลอกไม่ได้ — เลือกข้อความแล้วคัดลอกเอง')) }, 'คัดลอกลิงก์')]);
 }
+function adminCard() {
+  const box = h('div', { class: 'card' }, h('h2', {}, 'ผู้ดูแลระบบ (แอดมิน)'));
+  if (!cfg.syncUrl) { box.append(h('p', { class: 'hint' }, 'ตั้งค่าซิงค์ด้านบนก่อน แล้วจึงจัดการแอดมิน (เข้าสู่ระบบด้วยอีเมล) ได้')); return box; }
+  const link = location.href.split('#')[0] + '#sync=' + encodeURIComponent(cfg.syncUrl);
+  box.append(h('p', { class: 'hint' }, 'แอดมินเข้าสู่ระบบด้วยรหัส 6 หลักที่ส่งทางอีเมล คนที่ไม่อยู่ในรายชื่อนี้เปิดเมนูแอดมินหรือแก้ข้อมูลหลักไม่ได้ (พนักงานเบิก / ตรวจนับผ่าน QR ไม่ต้องเข้าสู่ระบบ)'));
+  const listBox = h('div'); box.append(listBox);
+  async function load() {
+    if (!authed()) { listBox.append(h('p', { class: 'hint' }, 'ยังไม่ได้เข้าสู่ระบบ')); return; }
+    listBox.textContent = 'กำลังโหลดรายชื่อ…';
+    try { const r = await api({ mode: 'admins_get', token: cfg.session.token }, 20000); if (!r || !r.ok) throw new Error('x'); draw(r.admins, r.owner); }
+    catch (e) { listBox.textContent = 'โหลดรายชื่อไม่ได้ — ตรวจว่าเข้าสู่ระบบอยู่และอัปเดตโค้ด Apps Script เป็นเวอร์ชันล่าสุดแล้ว'; }
+  }
+  async function save(list) {
+    try { const r = await api({ mode: 'admins_set', token: cfg.session.token, list }, 20000); if (!r || !r.ok) throw new Error('x'); draw(r.admins, r.owner); toast('บันทึกรายชื่อแอดมินแล้ว'); }
+    catch (e) { toast('บันทึกไม่สำเร็จ'); }
+  }
+  function draw(admins, owner) {
+    listBox.textContent = '';
+    const tb = h('tbody'); admins.forEach(a => tb.append(h('tr', {}, h('td', {}, a, a === owner ? h('span', { class: 'badge', style: 'margin-left:8px' }, 'เจ้าของ') : null, cfg.session.email === a ? h('span', { class: 'badge', style: 'margin-left:8px' }, 'คุณ') : null),
+      h('td', { class: 'r' }, a === owner ? null : h('button', { class: 'btn sm danger', onclick: () => { if (confirm('ลบ ' + a + ' ออกจากแอดมิน?')) save(admins.filter(x => x !== a && x !== owner)); } }, 'ลบ')))));
+    const ne = h('input', { type: 'email', placeholder: 'อีเมลแอดมินใหม่', 'aria-label': 'อีเมลแอดมินใหม่' });
+    const add = () => { const v = ne.value.trim().toLowerCase(); if (v.indexOf('@') < 1 || v.indexOf('.') < 0) return toast('กรอกอีเมลให้ถูกต้อง'); if (admins.includes(v)) return toast('มีอีเมลนี้แล้ว'); save(admins.filter(x => x !== owner).concat(v)); };
+    ne.addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+    listBox.append(h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'อีเมล'), h('th', {}, ''))), tb)), h('div', { class: 'bar', style: 'margin-top:10px' }, ne, h('button', { class: 'btn', onclick: add }, '+ เพิ่มแอดมิน')));
+  }
+  load();
+  const li = h('input', { type: 'text', value: link, readonly: true, onclick: e => e.target.select() });
+  box.append(h('h3', { style: 'margin:16px 0 4px' }, 'ลิงก์แอดมิน'), h('p', { class: 'hint' }, 'ส่งให้แอดมินคนใหม่ เปิดแล้วเชื่อมต่อระบบกลางให้อัตโนมัติ แล้วเข้าสู่ระบบด้วยอีเมล (ลิงก์นี้มีที่อยู่ซิงค์อยู่ อย่าโพสต์สาธารณะ)'), li,
+    h('div', { class: 'bar', style: 'margin-top:8px' }, h('button', { class: 'btn sec', onclick: () => navigator.clipboard.writeText(link).then(() => toast('คัดลอกลิงก์แอดมินแล้ว'), () => toast('คัดลอกไม่ได้ — เลือกข้อความแล้วคัดลอกเอง')) }, 'คัดลอกลิงก์แอดมิน')));
+  return box;
+}
 PAGES.settings = function () {
   const page = h('div'), S = ui.set = ui.set || { editDept: null };
   page.append(pageHead('ตั้งค่า'));
@@ -3587,6 +3737,8 @@ PAGES.settings = function () {
     h('div', { class: 'bar', style: 'margin:10px 0' }, h('button', { class: 'btn', onclick: async () => { cfg.syncUrl = url.value.trim(); if (cfg.syncUrl && !okSync(cfg.syncUrl)) { toast('ที่อยู่ซิงค์ไม่ถูกต้อง — ต้องเป็นลิงก์ Web app จาก Apps Script (ขึ้นต้น https://script.google.com/macros/s/ ลงท้าย /exec)'); return; } if (cfg.syncUrl) { cfg.dirty = true; } saveCfg(); if (cfg.syncUrl) { await pull(); push(); } else { ui.sync = 'off'; render(); } } }, 'บันทึกและเชื่อมต่อ'), h('button', { class: 'btn sec', onclick: () => pull() }, 'ดึงข้อมูลล่าสุด')),
     h('details', {}, h('summary', { style: 'cursor:pointer;color:var(--act);font-weight:600' }, 'โค้ด Google Apps Script'), h('pre', { style: 'background:var(--panel2);padding:12px;border-radius:8px;overflow:auto;font-size:12.5px' }, APPS_SCRIPT),
       h('button', { class: 'btn sm sec', onclick: () => navigator.clipboard.writeText(APPS_SCRIPT).then(() => toast('คัดลอกแล้ว'), () => toast('คัดลอกไม่ได้')) }, 'คัดลอกโค้ด'))));
+  /* admins */
+  page.append(adminCard());
   /* backup */
   page.append(h('div', { class: 'card' }, h('h2', {}, 'สำรองและกู้คืนข้อมูล'), h('div', { class: 'bar' },
     h('button', { class: 'btn sec', onclick: () => download('ppe-backup-' + today() + '.json', JSON.stringify(store), 'application/json') }, 'ส่งออกข้อมูลทั้งหมด (JSON)'),
@@ -3604,6 +3756,7 @@ if (!ui.kiosk) ui.page = 'req';
 render();
 $('#menu').addEventListener('click', () => { ui.navOpen = !ui.navOpen; renderRail(); });
 $('#dlg').addEventListener('click', e => { if (e.target === e.currentTarget) closeDlg(); });
+if (cfg.syncUrl && authed() && !ui.kiosk) api({ mode: 'whoami', token: cfg.session.token }, 15000).then(r => { if (r && r.ok === false && r.error === 'auth') { cfg.session = null; saveCfg(); render(); } else if (r && r.ok) { cfg.session.email = r.email; saveCfg(); } }).catch(() => { });
 if (cfg.syncUrl) { pull(true); setInterval(() => pull(true), ui.kiosk ? 300000 : 60000); }
 
 </script>
