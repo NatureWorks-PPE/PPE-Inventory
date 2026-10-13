@@ -3006,9 +3006,9 @@ function loginPage() {
     busy = true; L.err = 'กำลังส่งรหัส…'; L.fail = false; draw();
     try {
       const r = await api({ mode: 'otp_request', email: em }, 20000);
-      if (!r || r.ok !== true) throw new Error('unsupported');
+      if (!r || r.ok !== true) throw new Error('server:' + JSON.stringify(r));
       L.email = em; L.step = 'code'; L.err = '';
-    } catch (e) { L.err = 'ติดต่อระบบกลางไม่ได้ หรือโค้ด Apps Script ยังไม่ใช่เวอร์ชันล่าสุด (ต้องอัปเดตแล้ว Deploy เวอร์ชันใหม่ และกดอนุญาตสิทธิ์ส่งอีเมล)'; L.fail = true; }
+    } catch (e) { const m = String((e && e.message) || e); L.err = 'ติดต่อระบบกลางไม่ได้ หรือโค้ด Apps Script ยังไม่ใช่เวอร์ชันล่าสุด (ต้องอัปเดตแล้ว Deploy เวอร์ชันใหม่ และกดอนุญาตสิทธิ์ส่งอีเมล) [' + m.slice(0, 120) + ']'; L.fail = true; }
     busy = false; draw();
   }
   async function verify(code) {
