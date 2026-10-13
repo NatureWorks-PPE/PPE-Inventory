@@ -2612,7 +2612,7 @@ function normalize(s) {
   if (!s.locations || !s.locations.length) s.locations = [{ id: 'canteen', name: 'Canteen (คลังหลัก)', main: true }, { id: 'lobby', name: 'Lobby (คลังย่อย)', main: false }];
   s.locations.forEach((l, i) => { if (!l.color) l.color = LOC_COLORS[i % LOC_COLORS.length]; if (l.main === undefined) l.main = !!l.primary; delete l.primary; });
   if (!s.locations.some(l => l.main)) s.locations[0].main = true;
-  s.counts = s.counts || [];
+  s.counts = s.counts || []; s.del = s.del || [];
   s.locations.forEach(l => { if (!(l.countDays > 0)) l.countDays = l.main ? 30 : 7; });
   const main = s.locations.find(l => l.main).id;
   /* legacy single-catalog backup -> separate catalogs per store */
@@ -2668,6 +2668,10 @@ function load() {
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { toast('พื้นที่จัดเก็บในเบราว์เซอร์เต็ม — ควรสำรองข้อมูลแล้วลบรูปที่ไม่จำเป็น'); } }
 function saveCfg() { try { localStorage.setItem(CFGK, JSON.stringify(cfg)); } catch (e) { } }
+function purge(ids) {
+  const dl = new Set(ids); store.del = [...new Set((store.del || []).concat(ids))];
+  store.moves = store.moves.filter(m => !dl.has(m.id)); store.counts = store.counts.filter(x => !dl.has(x.id)); commit();
+}
 function commit() { if (!ui.kiosk) { store.rev = Date.now(); if (cfg.syncUrl) { cfg.dirty = true; saveCfg(); } } balCache = null; save(); render(); push(); }
 
 const locById = id => store.locations.find(l => l.id === id);
@@ -2769,14 +2773,18 @@ async function pull(silent, ms) {
         const haveC = new Set((d.counts || []).map(c => c.id)), queuedC = store.counts.filter(c => c.q && !haveC.has(c.id));
         store = normalize(d); queued.forEach(m => store.moves.push(m)); queuedC.forEach(c => store.counts.push(c)); changed = true;
       } else if (d.moves && d.moves.length) {
-        const mine = new Set(store.moves.map(m => m.id)), its = new Set(store.items.map(i => i.id));
-        const add = d.moves.filter(m => !mine.has(m.id) && its.has(m.item));
+        const mine = new Set(store.moves.map(m => m.id)), its = new Set(store.items.map(i => i.id)), dels = new Set((store.del || []).concat(d.del || []));
+        const add = d.moves.filter(m => !mine.has(m.id) && its.has(m.item) && !dels.has(m.id));
         if (add.length) { add.forEach(m => store.moves.push(m)); changed = true; }
       }
       if (d.counts && d.counts.length) {
-        const mineC = new Set(store.counts.map(c => c.id)), addC = d.counts.filter(c => !mineC.has(c.id));
+        const mineC = new Set(store.counts.map(c => c.id)), dc = new Set((store.del || []).concat(d.del || [])), addC = d.counts.filter(c => !mineC.has(c.id) && !dc.has(c.id));
         if (addC.length) { addC.forEach(c => store.counts.push(c)); changed = true; }
       }
+    }
+    if (d.del && d.del.length) {
+      const have = new Set(store.del || []), nd = d.del.filter(x => !have.has(x));
+      if (nd.length) { const s2 = new Set(nd); store.del = (store.del || []).concat(nd); store.moves = store.moves.filter(m => !s2.has(m.id)); store.counts = store.counts.filter(x => !s2.has(x.id)); changed = true; }
     }
     ui.sync = 'on';
     if (changed) { balCache = null; save(); render(); if (!silent) toast('ดึงข้อมูลล่าสุดแล้ว'); }
@@ -2846,18 +2854,20 @@ function doPost(e) {
     let added = 0;
     const clean = m => { delete m.q; return m; };
     if (b.mode === 'append') {
+      const dl = {}; (cur.del || []).forEach(x => dl[x] = 1);
       const have = {}; cur.moves.forEach(m => have[m.id] = 1);
-      (b.moves || []).forEach(m => { if (m && m.id && !have[m.id]) { cur.moves.push(clean(m)); have[m.id] = 1; added++; } });
+      (b.moves || []).forEach(m => { if (m && m.id && !have[m.id] && !dl[m.id]) { cur.moves.push(clean(m)); have[m.id] = 1; added++; } });
       cur.counts = cur.counts || []; const hc = {}; cur.counts.forEach(c => hc[c.id] = 1);
-      (b.counts || []).forEach(c => { if (c && c.id && !hc[c.id]) { cur.counts.push(clean(c)); hc[c.id] = 1; added++; } });
+      (b.counts || []).forEach(c => { if (c && c.id && !hc[c.id] && !dl[c.id]) { cur.counts.push(clean(c)); hc[c.id] = 1; added++; } });
       if (added) cur.rev = Date.now();
     } else {
-      const s = b.store, ids = {}, have = {};
+      const s = b.store, ids = {}, have = {}, dl = {};
+      (s.del || []).concat(cur.del || []).forEach(x => dl[x] = 1); s.del = Object.keys(dl);
       (s.items || []).forEach(i => ids[i.id] = 1);
-      s.moves = (s.moves || []).map(clean); s.moves.forEach(m => have[m.id] = 1);
-      cur.moves.forEach(m => { if (!have[m.id] && ids[m.item]) { s.moves.push(m); added++; } });
-      s.counts = (s.counts || []).map(clean); const hc = {}; s.counts.forEach(c => hc[c.id] = 1);
-      (cur.counts || []).forEach(c => { if (!hc[c.id]) { s.counts.push(c); added++; } });
+      s.moves = (s.moves || []).map(clean).filter(m => !dl[m.id]); s.moves.forEach(m => have[m.id] = 1);
+      cur.moves.forEach(m => { if (!have[m.id] && ids[m.item] && !dl[m.id]) { s.moves.push(m); added++; } });
+      s.counts = (s.counts || []).map(clean).filter(c => !dl[c.id]); const hc = {}; s.counts.forEach(c => hc[c.id] = 1);
+      (cur.counts || []).forEach(c => { if (!hc[c.id] && !dl[c.id]) { s.counts.push(c); added++; } });
       if (added) s.rev = Date.now();
       cur = s;
     }
@@ -3338,8 +3348,8 @@ PAGES.log = function () {
     field('แผนก', selectEl([['', 'ทุกแผนก']].concat(depts.map(d => [d, d])), L.dept, v => { L.dept = v; render(); })), field('ค้นหา', qi)),
     h('div', { class: 'bar', style: 'justify-content:space-between;margin-bottom:8px' }, h('span', { class: 'mut' }, list.length + ' รายการ · ' + qf(list.reduce((s, m) => s + m.qty, 0)) + ' ชิ้น · ' + money(list.reduce((s, m) => s + m.qty * m.cost, 0)) + ' บาท'),
       h('button', { class: 'btn sm sec', onclick: () => exportCsv('dispense-' + L.month + '-' + loc + '.csv', [['วันที่', 'รายการ', 'จำนวน', 'หน่วย', 'แผนก/เหตุผล', 'ผู้เบิก', 'มูลค่า', 'หมายเหตุ']].concat(list.map(m => { const it = itemById(m.item) || {}; return [m.date, it.name, m.qty, it.unit, m.party, m.by, m.qty * m.cost, m.note || '']; }))) }, 'ส่งออก CSV')),
-    list.length ? h('div', { class: 'tw', style: 'max-height:68vh' }, h('table', {}, h('thead', {}, h('tr', {}, ['วันที่', 'รายการ', 'จำนวน', 'แผนก / เหตุผล', 'ผู้เบิก', 'ประเภท'].map((x, i) => h('th', { class: i === 2 ? 'r' : '' }, x)))),
-      h('tbody', {}, list.map(m => { const it = itemById(m.item); return h('tr', {}, h('td', {}, thDate(m.date)), h('td', {}, it ? it.name : '—'), h('td', { class: 'r' }, qf(m.qty) + ' ' + (it ? it.unit : '')), h('td', {}, m.party || '—', m.note ? h('div', { class: 'mut', style: 'font-size:12px' }, m.note) : null), h('td', {}, m.by || '—'), h('td', {}, h('span', { class: 'badge' }, m.kind === 'req' ? 'พนักงานเบิก' : 'แอดมินจ่าย'))); })))) : h('div', { class: 'empty' }, 'ไม่มีรายการเบิก-จ่ายในเดือนนี้')));
+    list.length ? h('div', { class: 'tw', style: 'max-height:68vh' }, h('table', {}, h('thead', {}, h('tr', {}, ['วันที่', 'รายการ', 'จำนวน', 'แผนก / เหตุผล', 'ผู้เบิก', 'ประเภท', ''].map((x, i) => h('th', { class: i === 2 ? 'r' : '' }, x)))),
+      h('tbody', {}, list.map(m => { const it = itemById(m.item); return h('tr', {}, h('td', {}, thDate(m.date)), h('td', {}, it ? it.name : '—'), h('td', { class: 'r' }, qf(m.qty) + ' ' + (it ? it.unit : '')), h('td', {}, m.party || '—', m.note ? h('div', { class: 'mut', style: 'font-size:12px' }, m.note) : null), h('td', {}, m.by || '—'), h('td', {}, h('span', { class: 'badge' }, m.kind === 'req' ? 'พนักงานเบิก' : 'แอดมินจ่าย')), h('td', { class: 'r' }, h('button', { class: 'btn sm danger', onclick: () => { const ids = (m.ref ? store.moves.filter(x => x.ref === m.ref) : [m]).map(x => x.id); if (confirm('ลบ' + (ids.length > 1 ? 'ใบเบิก/จ่ายนี้ทั้งใบ (' + ids.length + ' รายการ)' : 'รายการนี้') + ' และคืนยอดสต็อก?')) { purge(ids); toast('ลบแล้ว'); } } }, 'ลบ'))); })))) : h('div', { class: 'empty' }, 'ไม่มีรายการเบิก-จ่ายในเดือนนี้')));
   return page;
 };
 
@@ -3701,6 +3711,7 @@ PAGES.settings = function () {
   page.append(h('div', { class: 'card' }, h('h2', {}, 'สำรองและกู้คืนข้อมูล'), h('div', { class: 'bar' },
     h('button', { class: 'btn sec', onclick: () => download('ppe-backup-' + today() + '.json', JSON.stringify(store), 'application/json') }, 'ส่งออกข้อมูลทั้งหมด (JSON)'),
     h('button', { class: 'btn sec', onclick: () => { const inp = h('input', { type: 'file', accept: '.json' }); inp.addEventListener('change', () => { const f = inp.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { try { const d = JSON.parse(rd.result); if (!d || !d.items) throw 0; if (!confirm('แทนที่ข้อมูลปัจจุบันทั้งหมดด้วยไฟล์สำรองนี้? (รองรับไฟล์สำรองจากเวอร์ชันเดิมด้วย)')) return; store = normalize(d); if (!locById(cfg.loc)) cfg.loc = mainLoc().id; commit(); toast('นำเข้าแล้ว'); } catch (e) { toast('ไฟล์ไม่ถูกต้อง'); } }; rd.readAsText(f); }); inp.click(); } }, 'นำเข้าไฟล์สำรอง'),
+    h('button', { class: 'btn danger', onclick: () => { const ids = store.moves.filter(m => m.kind !== 'open').map(m => m.id).concat(store.counts.map(x => x.id)); if (!ids.length) return toast('ไม่มีรายการให้ล้าง'); if (!confirm('ล้างข้อมูลทดสอบ: ลบประวัติ เบิก / จ่าย / รับเข้า / โอน / ตรวจนับ ทั้งหมด ' + ids.length + ' รายการ ของทุกคลัง (เหลือแต่ยอดยกมาจาก Excel) ลบแล้วกู้คืนไม่ได้ ยืนยัน?')) return; if (!confirm('ยืนยันอีกครั้ง — แน่ใจว่าไม่มีรายการจริงปนอยู่?')) return; purge(ids); toast('ล้างข้อมูลทดสอบแล้ว ' + ids.length + ' รายการ'); } }, 'ล้างข้อมูลทดสอบ'),
     h('button', { class: 'btn danger', onclick: () => { if (!confirm('คืนค่าเป็นข้อมูลตั้งต้น (รายการ PPE จาก Excel)? ข้อมูลที่บันทึกไว้ทั้งหมดจะหาย')) return; store = normalize(JSON.parse(JSON.stringify(SEED))); store.rev = Date.now(); cfg.loc = mainLoc().id; saveCfg(); balCache = null; save(); render(); push(); toast('คืนค่าแล้ว'); } }, 'คืนค่าข้อมูลตั้งต้น')),
     h('p', { class: 'hint', style: 'margin-top:12px' }, store.items.length + ' รายการ PPE · ' + store.moves.length + ' ความเคลื่อนไหว · ' + store.locations.length + ' คลัง')));
   return page;
