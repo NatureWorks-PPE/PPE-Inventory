@@ -207,6 +207,7 @@ dialog::backdrop{background:rgba(8,16,22,.55)}
 .clist{display:flex;flex-direction:column;gap:8px;margin-top:10px}.crow{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line,#d8dee4);border-radius:10px}.crow.on{border-color:var(--loc,#1FA6A0);background:color-mix(in srgb,var(--loc,#1FA6A0) 8%,transparent)}.crow .cn{flex:1;min-width:0;line-height:1.3}.crow input{width:84px;flex:none;font-size:18px;text-align:right}.csum{margin-top:10px;font-weight:600}
 .kbar{background:var(--loc);color:#0F2430;font:700 17px var(--f-head);padding:10px 16px;margin:-6px -6px 14px;border-radius:0 0 12px 12px;display:flex;align-items:center;gap:8px}
 .who button{background:transparent;color:#cfe3e3;border:1px solid #3d5a63;margin-top:6px}.who button:hover{background:#1c3a44}
+.caution{margin:10px 0;padding:10px 12px;border:2px solid #d98a00;background:#fff4d6;border-radius:10px;display:flex;flex-direction:column;gap:2px;font-size:15px;color:#5a3b00}.caution b{font-size:16px}.caution.ok{border-color:#2f7d5b;background:#e3f4ea;color:#14532d}.btn:disabled{opacity:.55;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -3131,12 +3132,21 @@ function donePage(msg, again, againLabel) {
   return page;
 }
 function finishBtn(onDone) {
-  return h('button', { class: 'btn', onclick: () => { if (pendingAny() && cfg.syncUrl) { toast(ui.sync === 'err' ? 'ยังส่งข้อมูลไม่สำเร็จ — อย่าปิดหน้านี้ รอให้ขึ้น ✓ ก่อน' : 'กำลังส่งข้อมูล… รอสักครู่'); return; } onDone(); try { window.close(); } catch (e) { } } }, 'เสร็จสิ้น');
+  const waiting = () => isKiosk() && !!cfg.syncUrl && pendingAny() > 0;
+  const w = waiting(), err = ui.sync === 'err';
+  const fin = h('button', { class: 'btn big', disabled: w, onclick: () => { if (waiting()) { toast('ยังไม่ได้รับการยืนยันว่าข้อมูลถึงแอดมิน — รอให้ขึ้น ✓ ก่อน'); return; } onDone(); try { window.close(); } catch (e) { } } }, w ? (err ? 'ยังเสร็จสิ้นไม่ได้ — ข้อมูลยังไม่ถึงแอดมิน' : 'รอยืนยันว่าข้อมูลถึงแอดมิน…') : 'ยืนยัน: เสร็จสิ้น');
+  return h('span', { style: 'display:contents' }, w && err ? h('button', { class: 'btn', onclick: () => { ui.sync = 'busy'; render(); push(); } }, 'ส่งข้อมูลอีกครั้ง') : null, fin);
+}
+function cautionBox() {
+  if (!isKiosk() || !cfg.syncUrl) return null;
+  const ok = pendingAny() === 0;
+  return h('div', { class: 'caution' + (ok ? ' ok' : '') }, h('b', {}, ok ? '✓ ตรวจแล้ว: ข้อมูลถึงแอดมินแล้ว' : '⚠ ข้อควรระวัง'),
+    h('span', {}, ok ? 'กดปุ่ม "ยืนยัน: เสร็จสิ้น" เพื่อจบการเบิก' : 'การเบิกจะเสร็จสมบูรณ์ต่อเมื่อเห็น "✓ ส่งข้อมูลถึงแอดมินแล้ว" เท่านั้น — อย่าปิดหน้านี้ก่อน แล้วกด "ยืนยัน: เสร็จสิ้น"'));
 }
 function syncNote() {
   if (!isKiosk()) return null;
   if (!cfg.syncUrl) return h('p', { class: 'syncnote warn' }, '⚠ เครื่องนี้ยังไม่ได้เชื่อมต่อระบบกลาง ข้อมูลที่บันทึกจะไม่ถึงแอดมิน — แจ้งแอดมินให้สร้าง QR/ลิงก์ใหม่');
-  if (pendingAny()) return h('p', { class: 'syncnote ' + (ui.sync === 'err' ? 'warn' : '') }, ui.sync === 'err' ? '⚠ ส่งข้อมูลไม่สำเร็จ ยังไม่ถึงแอดมิน — อย่าปิดหน้านี้ ระบบจะลองส่งใหม่เอง (' + (ui.syncErr || 'error') + ')' : 'กำลังส่งข้อมูลถึงแอดมิน…');
+  if (pendingAny()) return h('p', { class: 'syncnote ' + (ui.sync === 'err' ? 'warn' : '') }, ui.sync === 'err' ? '⚠ ส่งข้อมูลไม่สำเร็จ ยังไม่ถึงแอดมิน — อย่าปิดหน้านี้ ระบบจะลองส่งใหม่เอง (' + (ui.syncErr || 'error') + ')' : 'กำลังส่งข้อมูลถึงแอดมิน… ยังไม่เสร็จสิ้น');
   return h('p', { class: 'syncnote ok' }, '✓ ส่งข้อมูลถึงแอดมินแล้ว');
 }
 PAGES.req = function () {
@@ -3147,7 +3157,7 @@ PAGES.req = function () {
   if (isKiosk() && !cfg.syncUrl && !R.receipt) page.append(syncNote());
   if (R.receipt) {
     const r = R.receipt;
-    page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกการเบิกแล้ว'), syncNote(),
+    page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกการเบิกแล้ว'), syncNote(), cautionBox(),
       h('p', { style: 'margin:4px 0 8px' }, r.name + ' · แผนก ' + r.dept + ' · ' + thDate(r.date) + ' · คลัง ' + r.loc),
       h('ul', { style: 'margin:0 0 10px;padding-left:20px' }, r.lines.map(l => h('li', {}, l.name + ' × ' + qf(l.qty) + ' ' + l.unit))),
       h('div', { class: 'bar' }, h('button', { class: 'btn sec', onclick: () => printDoc('ใบเบิก PPE', '<h2>ใบเบิก PPE</h2><div>คลัง ' + esc(r.loc) + ' · วันที่ ' + thDate(r.date) + '<br>ผู้เบิก ' + esc(r.name) + ' · แผนก ' + esc(r.dept) + (r.note ? '<br>หมายเหตุ: ' + esc(r.note) : '') + '</div><table><tr><th>รายการ</th><th class=r>จำนวน</th></tr>' + r.lines.map(l => '<tr><td>' + esc(l.name) + '</td><td class=r>' + qf(l.qty) + ' ' + esc(l.unit) + '</td></tr>').join('') + '</table><p style="margin-top:40px">ลงชื่อผู้เบิก ............................</p>') }, 'พิมพ์ใบเบิก'),
@@ -3289,7 +3299,7 @@ function countKiosk() {
   page.append(pageHead('ตรวจนับ Stock', 'คลัง ' + locName(loc) + ' — นับของจริงแล้วกรอกจำนวน (ช่องที่ไม่กรอกจะไม่ถูกปรับยอด)'));
   if (C.done) {
     const d = C.done;
-    page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกผลตรวจนับแล้ว'), syncNote(),
+    page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกผลตรวจนับแล้ว'), syncNote(), cautionBox(),
       h('p', { style: 'margin:4px 0 8px' }, d.by + ' · ' + thDate(d.date) + ' · นับ ' + d.n + ' รายการ'),
       h('div', { class: 'bar' }, finishBtn(() => { C.done = null; C.finished = true; render(); }), h('button', { class: 'btn sec', onclick: () => { C.done = null; render(); } }, 'ตรวจนับรอบใหม่'))));
     return page;
@@ -3639,7 +3649,35 @@ function kioskLink(l, mode) {
   openDlg((isC ? 'ลิงก์และ QR ตรวจนับ Stock — ' : 'ลิงก์และ QR หน้าเบิก PPE — ') + l.name, h('div', {},
     h('p', { class: 'hint' }, isC ? 'ผู้ตรวจนับสแกน QR นี้ จะเห็นเฉพาะหน้า "ตรวจนับ Stock" ของคลังนี้ นับแบบไม่เห็นยอดในระบบ และบันทึกแล้วปรับยอดให้ตรงอัตโนมัติ — ให้เฉพาะผู้ตรวจนับ เพราะผลการนับปรับสต็อกจริง. ' + syncMsg : 'พนักงานสแกน QR หรือเปิดลิงก์นี้ จะเห็นเฉพาะหน้า "เบิก PPE" ของคลังนี้ (ไม่มีเมนูแอดมิน) ' + syncMsg),
     qbox, h('input', { type: 'text', value: url, readonly: true, onclick: e => e.target.select() })),
-    [h('button', { class: 'btn sec', onclick: closeDlg }, 'ปิด'), h('button', { class: 'btn sec', onclick: printQr }, 'พิมพ์ QR'), h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'), () => toast('คัดลอกไม่ได้ — เลือกข้อความแล้วคัดลอกเอง')) }, 'คัดลอกลิงก์')]);
+    [h('button', { class: 'btn sec', onclick: closeDlg }, 'ปิด'), isC ? h('button', { class: 'btn sec', onclick: printQr }, 'พิมพ์ QR') : h('button', { class: 'btn', onclick: () => printPosters([l]) }, 'พิมพ์โปสเตอร์ติดประกาศ'), h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'), () => toast('คัดลอกไม่ได้ — เลือกข้อความแล้วคัดลอกเอง')) }, 'คัดลอกลิงก์')]);
+}
+
+/* ============ โปสเตอร์ QR เบิก PPE (ติดประกาศ) ============ */
+function reqUrl(l) { return location.href.split('#')[0] + '#kiosk=' + encodeURIComponent(l.id) + (okSync(cfg.syncUrl) ? '&sync=' + encodeURIComponent(cfg.syncUrl) : ''); }
+function posterPage(l) {
+  const c = /^#[0-9a-f]{6}$/i.test(l.color || '') ? l.color : '#1FA6A0';
+  const lum = (parseInt(c.slice(1, 3), 16) * 299 + parseInt(c.slice(3, 5), 16) * 587 + parseInt(c.slice(5, 7), 16) * 114) / 1000, fg = lum > 150 ? '#111' : '#fff';
+  const qr = qrSvg(reqUrl(l), 8).replace(/<svg /, '<svg style="width:100%;height:auto;display:block" ');
+  const steps = [['สแกน QR นี้ด้วยกล้องมือถือ', 'เปิดกล้องหรือ LINE แล้วสแกน จะขึ้นหน้า "เบิก PPE"'], ['เลือกของที่ต้องการ', 'ใส่จำนวน แล้วกด "+ เพิ่ม"'], ['เลือกแผนก และพิมพ์ชื่อ-นามสกุล', 'ถ้าไม่มีแผนก เลือก "Other อื่นๆ" แล้วระบุแผนก'], ['กด "บันทึกการเบิก" แล้วรอจนเห็น ✓', 'เห็น "✓ ส่งข้อมูลถึงแอดมินแล้ว" จึงกด "ยืนยัน: เสร็จสิ้น"']];
+  return '<section class="pg"><div class="hd"><div class="co">NatureWorks · PPE Store</div><h1>เบิก PPE</h1><div class="loc" style="background:' + c + ';color:' + fg + '">' + esc(l.name) + '</div></div>' +
+    '<div class="qr"><div class="qrb">' + qr + '</div><p class="cap">สแกนเพื่อเบิก PPE</p></div>' +
+    '<ol class="st">' + steps.map((s, i) => '<li><b style="background:' + c + ';color:' + fg + '">' + (i + 1) + '</b><div><strong>' + esc(s[0]) + '</strong><span>' + esc(s[1]) + '</span></div></li>').join('') + '</ol>' +
+    '<div class="warn"><b>⚠ ข้อควรระวัง</b> ต้องเห็น <u>"✓ ส่งข้อมูลถึงแอดมินแล้ว"</u> แล้วกด <u>"ยืนยัน: เสร็จสิ้น"</u> จึงจะถือว่าเบิกเสร็จ ห้ามปิดหน้าจอก่อน</div><p class="ft">เบิกทุกครั้งที่หยิบของ · ต้องมีสัญญาณอินเทอร์เน็ต</p></section>';
+}
+const POSTER_CSS = '@page{size:A4;margin:0}*{box-sizing:border-box}body{margin:0;font-family:Sarabun,"Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+  '.pg{width:210mm;height:297mm;padding:14mm 16mm 10mm;display:flex;flex-direction:column;page-break-after:always;overflow:hidden}.pg:last-child{page-break-after:auto}' +
+  '.hd{text-align:center}.co{font-size:15px;color:#555;letter-spacing:.5px}h1{font-size:80px;line-height:1.05;margin:1mm 0 3mm;font-weight:800}' +
+  '.loc{display:inline-block;font-size:38px;font-weight:700;padding:2mm 10mm;border-radius:99px}' +
+  '.qr{text-align:center;margin:5mm 0 5mm}.qrb{width:84mm;margin:0 auto;padding:4mm;border:2.2mm solid #111;border-radius:6mm}.cap{font-size:26px;font-weight:700;margin:4mm 0 0}' +
+  '.st{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3mm}.st li{display:flex;gap:5mm;align-items:center}' +
+  '.st b{flex:none;width:13mm;height:13mm;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:26px}' +
+  '.st strong{display:block;font-size:24px;line-height:1.25}.st span{display:block;font-size:16px;color:#444;margin-top:.5mm}' +
+  '.warn{margin:auto 0 4mm;border:1.2mm solid #111;border-radius:4mm;padding:4mm 5mm;font-size:19px;line-height:1.35;background:#fff3c4}.warn b{font-size:22px;margin-right:2mm}.ft{margin:0;text-align:center;font-size:15px;color:#444;border-top:1px solid #bbb;padding-top:4mm}';
+function posterDoc(locs) { return '<!doctype html><meta charset=utf-8><title>โปสเตอร์ QR เบิก PPE</title><style>' + POSTER_CSS + '</style>' + locs.map(posterPage).join(''); }
+function printPosters(locs) {
+  if (!okSync(cfg.syncUrl) && !confirm('ยังไม่ได้ตั้งค่าซิงค์ที่ถูกต้อง QR นี้จะใช้เบิกแล้วข้อมูลไม่เข้าระบบกลาง — พิมพ์ต่อหรือไม่?')) return;
+  const w = window.open('', '_blank'); if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ — อนุญาตป๊อปอัปแล้วลองใหม่'); return; }
+  w.document.write(posterDoc(locs)); w.document.close(); w.focus(); setTimeout(() => w.print(), 500);
 }
 function adminCard() {
   const box = h('div', { class: 'card' }, h('h2', {}, 'รหัสผ่านแอดมิน'));
@@ -3678,7 +3716,7 @@ PAGES.settings = function () {
       } }, 'ลบ'))));
   });
   const nl = h('input', { type: 'text', placeholder: 'ชื่อคลังใหม่ เช่น Store 3' });
-  page.append(h('div', { class: 'card' }, h('h2', {}, 'คลัง ', h('small', {}, store.locations.length)), h('p', { class: 'hint' }, 'แต่ละคลังแยกข้อมูลกันทั้งหมด: รายการ PPE ราคา Min/Max และยอดคงเหลือ สลับคลังที่มุมซ้ายบนของเมนู'),
+  page.append(h('div', { class: 'card' }, h('div', { class: 'bar', style: 'justify-content:space-between' }, h('h2', {}, 'คลัง ', h('small', {}, store.locations.length)), h('button', { class: 'btn', onclick: () => printPosters(store.locations) }, 'พิมพ์โปสเตอร์ QR เบิก (ทุกคลัง)')), h('p', { class: 'hint' }, 'แต่ละคลังแยกข้อมูลกันทั้งหมด: รายการ PPE ราคา Min/Max และยอดคงเหลือ สลับคลังที่มุมซ้ายบนของเมนู'),
     h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, ['ชื่อคลัง', 'สี', 'บทบาท', 'ตรวจนับทุก (วัน)', 'ลิงก์ / QR สำหรับมือถือ', 'รายการ', ''].map(x => h('th', {}, x)))), lt)),
     h('div', { class: 'bar', style: 'margin-top:12px' }, h('div', { style: 'flex:1;min-width:200px' }, nl), h('button', { class: 'btn', onclick: () => { const n = nl.value.trim(); if (!n) return toast('กรอกชื่อคลัง'); store.locations.push({ id: uid(), name: n, main: false, color: LOC_COLORS[store.locations.length % LOC_COLORS.length] }); commit(); toast('เพิ่มคลังแล้ว — ไปที่ รายการ PPE เพื่อเพิ่มรายการเข้าคลังนี้'); } }, '+ เพิ่มคลัง'))));
   /* departments */
