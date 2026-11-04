@@ -2722,7 +2722,7 @@ function usageIn(month, loc) { return store.moves.filter(m => isUse(m) && (loc =
 let pushT = null, pushing = false;
 const pendingMoves = () => store.moves.filter(m => m.q);
 const pendingCounts = () => store.counts.filter(c => c.q);
-const pendingAny = () => pendingMoves().length + pendingCounts().length;
+const pendingAny = () => pendingMoves().length + pendingCounts().length + loanPending().length;
 /* kiosk (พนักงานเบิก) ส่งเฉพาะรายการเบิกใหม่ (append) ส่วนแอดมินส่งข้อมูลทั้งชุด — เซิร์ฟเวอร์รวมรายการเบิกให้ ไม่เขียนทับกัน */
 function push() {
   if (!cfg.syncUrl) return;
@@ -2796,9 +2796,12 @@ const APPS_SCRIPT = `// วางใน Code.gs แล้ว Deploy > New deploy
 // Execute as: Me   |   Who has access: Anyone
 // รวมรายการเบิกจากหลายเครื่องโดยไม่เขียนทับกัน + แอดมินเข้าสู่ระบบด้วยรหัสผ่าน
 // ตั้งรหัสผ่านที่: ตั้งค่าโปรเจ็กต์ (รูปเฟือง) > Script Properties > เพิ่ม ADMIN_PASSWORD
+// ระบบยืม-คืนอุปกรณ์ เก็บแยกไฟล์ ppe-loan-data.json ไม่ยุ่งกับข้อมูลเบิก-จ่าย PPE เดิม
 const NAME = 'ppe-store-data.json';
+const LOAN_NAME = 'ppe-loan-data.json';
 const SESSION_DAYS = 30;
 const MAX_FAILS = 5;
+function lf_() { const it = DriveApp.getFilesByName(LOAN_NAME); return it.hasNext() ? it.next() : DriveApp.createFile(LOAN_NAME, '{}'); }
 function f_() { const it = DriveApp.getFilesByName(NAME); return it.hasNext() ? it.next() : DriveApp.createFile(NAME, '{}'); }
 function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 function props_() { return PropertiesService.getScriptProperties(); }
@@ -2819,7 +2822,11 @@ function newToken_() {
   P.setProperty('T_' + hash_(token), JSON.stringify({ exp: now + SESSION_DAYS * 86400000, sig: sig_() }));
   return token;
 }
-function doGet() {
+function doGet(e) {
+  if (e && e.parameter && e.parameter.p === 'loan') {
+    let d = {}; try { d = JSON.parse(lf_().getBlob().getDataAsString() || '{}'); } catch (x) { d = {}; }
+    d.kind = 'loan'; return out_(d);
+  }
   return ContentService.createTextOutput(f_().getBlob().getDataAsString() || '{}').setMimeType(ContentService.MimeType.JSON);
 }
 function acct_(b) {
@@ -2846,6 +2853,7 @@ function acct_(b) {
 function doPost(e) {
   const b = JSON.parse(e.postData.contents);
   if (['login', 'whoami', 'logout', 'setpw'].indexOf(b.mode) >= 0) return acct_(b);
+  if (b.mode === 'loan_append' || b.mode === 'loan_full') return loan_(b);
   if (b.mode !== 'append' && !auth_(b.token)) return out_({ ok: false, error: 'auth' });
   const lock = LockService.getScriptLock(); lock.waitLock(25000);
   try {
@@ -2871,6 +2879,37 @@ function doPost(e) {
       (cur.counts || []).forEach(c => { if (!hc[c.id] && !dl[c.id]) { s.counts.push(c); added++; } });
       if (added) s.rev = Date.now();
       cur = s;
+    }
+    f.setContent(JSON.stringify(cur));
+    return out_({ ok: true, added: added, rev: cur.rev || 0 });
+  } finally { lock.releaseLock(); }
+}
+/* ---------- ยืม-คืนอุปกรณ์ (ไฟล์แยก) ---------- */
+function loan_(b) {
+  const admin = auth_(b.token);
+  if (b.mode === 'loan_full' && !admin) return out_({ ok: false, error: 'auth' });
+  const lock = LockService.getScriptLock(); lock.waitLock(25000);
+  try {
+    const f = lf_(); let cur = {};
+    try { cur = JSON.parse(f.getBlob().getDataAsString() || '{}'); } catch (x) { cur = {}; }
+    cur.loans = cur.loans || []; cur.litems = cur.litems || []; cur.del = cur.del || [];
+    delete cur.kind;
+    let added = 0;
+    const clean = m => { delete m.q; return m; };
+    if (b.mode === 'loan_append') {
+      const dl = {}; cur.del.forEach(x => dl[x] = 1);
+      const have = {}; cur.loans.forEach(m => have[m.id] = 1);
+      /* ผู้ที่ไม่ได้เข้าสู่ระบบ ส่งได้เฉพาะรายการ "ยืม" — การรับคืนต้องเป็นแอดมิน */
+      (b.loans || []).forEach(m => { if (m && m.id && !have[m.id] && !dl[m.id] && (admin || m.type === 'out')) { cur.loans.push(clean(m)); have[m.id] = 1; added++; } });
+      if (added) cur.rev = Date.now();
+    } else {
+      const s = b.loan || {}, dl = {}, have = {};
+      (s.del || []).concat(cur.del).forEach(x => dl[x] = 1); s.del = Object.keys(dl);
+      s.litems = s.litems || [];
+      s.loans = (s.loans || []).map(clean).filter(m => !dl[m.id]); s.loans.forEach(m => have[m.id] = 1);
+      cur.loans.forEach(m => { if (!have[m.id] && !dl[m.id]) { s.loans.push(m); added++; } });
+      if (added) s.rev = Date.now();
+      delete s.kind; cur = s;
     }
     f.setContent(JSON.stringify(cur));
     return out_({ ok: true, added: added, rev: cur.rev || 0 });
@@ -2944,6 +2983,7 @@ function picker(o) {
 const PAGES = {};
 const NAV = [
   ['เบิก - จ่าย', [['req', 'เบิก PPE', '✎'], ['log', 'ประวัติเบิก-จ่าย', '▤'], ['issue', 'จ่ายออก (แอดมิน)', '⇡']]],
+  ['ยืม - คืน อุปกรณ์', [['lend', 'ยืมอุปกรณ์', '⇆'], ['lret', 'รับคืน / ค้างคืน', '↩'], ['llog', 'ประวัติยืม-คืน', '▤'], ['litems', 'อุปกรณ์ให้ยืม', '☰']]],
   ['Stock คงเหลือ', [['stock', 'ยอดคงเหลือ', '▦'], ['count', 'ตรวจนับ Stock', '☑'], ['receive', 'รับเข้า', '⇣'], ['xfer', 'โอนสินค้า', '⇄'], ['order', 'สั่งซื้อ / เติมของ', '◍']]],
   ['ข้อมูลหลัก', [['items', 'รายการ PPE (Min / Max)', '☰'], ['report', 'รายงาน', '▥'], ['settings', 'ตั้งค่า', '⚙']]]
 ];
@@ -2957,12 +2997,12 @@ function renderRail() {
   r.append(h('div', { class: 'brand' }, h('i', {}, 'P'), h('b', {}, 'PPE Store')));
   const ls = selectEl(store.locations.map(l => [l.id, l.name]), cfg.loc, setLoc, { 'aria-label': 'เลือกคลังที่กำลังทำงาน' });
   r.append(h('div', { class: 'locbox' }, h('small', {}, 'เครื่องนี้กำลังทำงานที่คลัง'), ls));
-  const low = lowItems(cfg.loc).length;
+  const low = lowItems(cfg.loc).length, lod = LS ? openLoans(cfg.loc).filter(isOverdue).length : 0;
   const nav = h('nav', { class: 'nav', 'aria-label': 'เมนูหลัก' });
   NAV.forEach(([g, items]) => {
     nav.append(h('h4', {}, g));
     items.forEach(([id, label, ic]) => nav.append(h('button', { 'aria-current': ui.page === id ? 'page' : null, onclick: () => go(id) },
-      h('span', { class: 'ic' }, ic), label, id === 'order' && low ? h('span', { class: 'cnt' }, low) : null, id === 'count' && countStatus(cfg.loc).due ? h('span', { class: 'cnt' }, '!') : null)));
+      h('span', { class: 'ic' }, ic), label, id === 'order' && low ? h('span', { class: 'cnt' }, low) : null, id === 'count' && countStatus(cfg.loc).due ? h('span', { class: 'cnt' }, '!') : null, id === 'lret' && lod ? h('span', { class: 'cnt' }, lod) : null)));
   });
   r.append(nav);
   const nm = h('input', { type: 'text', value: cfg.user || '', placeholder: 'ชื่อผู้ใช้งาน (แอดมิน)', 'aria-label': 'ชื่อผู้ใช้งาน' });
@@ -3007,7 +3047,7 @@ function loginPage() {
 function render() {
   const y = window.scrollY;
   const l = locById(cfg.loc); document.documentElement.style.setProperty('--loc', l ? l.color : '#1FA6A0');
-  const lg = needLogin(); document.body.classList.toggle('kiosk', isKiosk() || lg); if (isKiosk()) ui.page = ui.kioskMode === 'count' ? 'count' : 'req';
+  const lg = needLogin(); document.body.classList.toggle('kiosk', isKiosk() || lg); if (isKiosk()) ui.page = ({ count: 'count', lend: 'lend' })[ui.kioskMode] || 'req';
   renderRail();
   const v = $('#view'); v.textContent = ''; if (isKiosk()) v.append(h('div', { class: 'kbar' }, '● ' + locName(cfg.loc))); v.append(lg ? loginPage() : PAGES[ui.page]());
   window.scrollTo(0, y);
@@ -3126,8 +3166,8 @@ function addLine(lines, it, n, mx) {
 }
 
 /* ============ เบิก PPE (self-service) ============ */
-function donePage(msg, again, againLabel) {
-  const page = h('div', { class: 'receipt', style: 'text-align:center;padding:28px 16px' }, h('div', { style: 'font-size:56px;line-height:1;color:#1a7f5a' }, '✓'), h('h2', { style: 'margin:10px 0 4px' }, 'เสร็จสิ้น'), h('p', { style: 'margin:0 0 6px' }, msg), syncNote(),
+function donePage(msg, again, againLabel, extra) {
+  const page = h('div', { class: 'receipt', style: 'text-align:center;padding:28px 16px' }, h('div', { style: 'font-size:56px;line-height:1;color:#1a7f5a' }, '✓'), h('h2', { style: 'margin:10px 0 4px' }, 'เสร็จสิ้น'), h('p', { style: 'margin:0 0 6px' }, msg), syncNote(), extra || null,
     isKiosk() ? h('p', { class: 'hint' }, 'ปิดหน้านี้ได้เลย') : null, h('div', { class: 'bar', style: 'justify-content:center' }, h('button', { class: 'btn sec', onclick: again }, againLabel)));
   return page;
 }
@@ -3152,16 +3192,16 @@ function syncNote() {
 PAGES.req = function () {
   const loc = cfg.loc, R = ui.req = ui.req || { lines: [], dept: '', other: '', name: '', date: today(), note: '', receipt: null };
   const page = h('div');
-  if (R.finished) return donePage('บันทึกการเบิกเรียบร้อย ขอบคุณครับ', () => { R.finished = false; render(); }, 'เบิกอีกครั้ง');
+  if (R.finished) return donePage('บันทึกการเบิกเรียบร้อย ขอบคุณครับ', () => { R.finished = false; R.last = null; render(); }, 'เบิกอีกครั้ง', slipBox(R.last));
   page.append(pageHead('เบิก PPE', 'เบิกจากคลัง ' + locName(loc)));
   if (isKiosk() && !cfg.syncUrl && !R.receipt) page.append(syncNote());
   if (R.receipt) {
     const r = R.receipt;
     page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกการเบิกแล้ว'), syncNote(), cautionBox(),
-      h('p', { style: 'margin:4px 0 8px' }, r.name + ' · แผนก ' + r.dept + ' · ' + thDate(r.date) + ' · คลัง ' + r.loc),
+      h('p', { style: 'margin:4px 0 8px' }, (r.no ? r.no + ' · ' : '') + r.name + ' · แผนก ' + r.dept + ' · ' + thDate(r.date) + ' · คลัง ' + r.loc),
       h('ul', { style: 'margin:0 0 10px;padding-left:20px' }, r.lines.map(l => h('li', {}, l.name + ' × ' + qf(l.qty) + ' ' + l.unit))),
-      h('div', { class: 'bar' }, h('button', { class: 'btn sec', onclick: () => printDoc('ใบเบิก PPE', '<h2>ใบเบิก PPE</h2><div>คลัง ' + esc(r.loc) + ' · วันที่ ' + thDate(r.date) + '<br>ผู้เบิก ' + esc(r.name) + ' · แผนก ' + esc(r.dept) + (r.note ? '<br>หมายเหตุ: ' + esc(r.note) : '') + '</div><table><tr><th>รายการ</th><th class=r>จำนวน</th></tr>' + r.lines.map(l => '<tr><td>' + esc(l.name) + '</td><td class=r>' + qf(l.qty) + ' ' + esc(l.unit) + '</td></tr>').join('') + '</table><p style="margin-top:40px">ลงชื่อผู้เบิก ............................</p>') }, 'พิมพ์ใบเบิก'),
-        finishBtn(() => { R.receipt = null; R.finished = true; render(); }), h('button', { class: 'btn sec', onclick: () => { R.receipt = null; render(); } }, 'เบิกรายการถัดไป'))));
+      h('div', { class: 'bar' }, slipBtn(r), h('button', { class: 'btn sec', onclick: () => printDoc('ใบเบิก PPE', '<h2>ใบเบิก PPE</h2><div>' + (r.no ? 'เลขที่ ' + esc(r.no) + ' · ' : '') + 'คลัง ' + esc(r.loc) + ' · วันที่ ' + thDate(r.date) + '<br>ผู้เบิก ' + esc(r.name) + ' · แผนก ' + esc(r.dept) + (r.note ? '<br>หมายเหตุ: ' + esc(r.note) : '') + '</div><table><tr><th>รายการ</th><th class=r>จำนวน</th></tr>' + r.lines.map(l => '<tr><td>' + esc(l.name) + '</td><td class=r>' + qf(l.qty) + ' ' + esc(l.unit) + '</td></tr>').join('') + '</table><p style="margin-top:40px">ลงชื่อผู้เบิก ............................</p>') }, 'พิมพ์ใบเบิก'),
+        finishBtn(() => { R.last = R.receipt; R.receipt = null; R.finished = true; render(); }), h('button', { class: 'btn sec', onclick: () => { R.receipt = null; render(); } }, 'เบิกรายการถัดไป'))));
   }
   const items = itemsAt(loc);
   if (!items.length) { page.append(h('div', { class: 'empty' }, 'คลังนี้ยังไม่มีรายการ PPE — แอดมินเพิ่มได้ที่เมนู "รายการ PPE" หรือโอนจากคลังหลัก')); return page; }
@@ -3198,7 +3238,7 @@ PAGES.req = function () {
     for (const l of R.lines) if (l.qty > bal(l.it)) return toast('มีของไม่พอ: ' + l.it.name);
     const ref = uid();
     R.lines.forEach(l => addMove({ item: l.it.id, loc, type: 'out', kind: 'req', qty: l.qty, cost: l.it.cost, date: R.date || today(), party: dept, note: ((other ? 'ระบุ: ' + other : '') + (other && R.note.trim() ? ' · ' : '') + R.note.trim()), by: name, ref }));
-    ui.req = { lines: [], dept: '', other: '', name: '', date: today(), note: '', receipt: { name, dept: dept + (other ? ' (' + other + ')' : ''), date: R.date, note: R.note, loc: locName(loc), lines: R.lines.map(l => ({ name: l.it.name, qty: l.qty, unit: l.it.unit })) } };
+    ui.req = { lines: [], dept: '', other: '', name: '', date: today(), note: '', receipt: { kind: 'req', no: slipNo('REQ', R.date || today(), ref), name, dept: dept + (other ? ' (' + other + ')' : ''), date: R.date || today(), note: R.note, loc: locName(loc), lines: R.lines.map(l => ({ name: l.it.name, qty: l.qty, unit: l.it.unit })) } };
     commit(); window.scrollTo(0, 0);
   }
   page.append(h('div', { class: 'split' }, left, right));
@@ -3639,17 +3679,17 @@ function cdIn(l) { const i = h('input', { type: 'number', min: '1', value: l.cou
 const okSync = u => /^https:\/\/script\.google\.com\/macros\/s\/[^\s]+\/exec$/.test(u || '');
 function qrSvg(text, cell) { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag(cell || 5, 4); }
 function kioskLink(l, mode) {
-  const isC = mode === 'count', tag = isC ? 'count' : 'kiosk';
+  const isC = mode === 'count', isL = mode === 'lend', tag = isC ? 'count' : isL ? 'lend' : 'kiosk';
   const base = location.href.split('#')[0], url = base + '#' + tag + '=' + encodeURIComponent(l.id) + (okSync(cfg.syncUrl) ? '&sync=' + encodeURIComponent(cfg.syncUrl) : '');
   let svg = ''; try { svg = qrSvg(url, 5); } catch (e) { }
   const qbox = h('div', { class: 'qrbox' }); qbox.innerHTML = svg || '<p class="hint">สร้าง QR ไม่ได้ (ลิงก์ยาวเกินไป)</p>';
-  const title = isC ? 'ตรวจนับ Stock' : 'เบิก PPE';
-  const printQr = () => printDoc('QR ' + title + ' ' + l.name, '<div style="text-align:center"><h1 style="font-size:34px;margin:10px 0">' + title + ' — ' + esc(l.name) + '</h1><div style="width:420px;margin:20px auto">' + qrSvg(url, 8).replace(/<svg /, '<svg style="width:100%;height:auto" ') + '</div><p style="font-size:22px">' + (isC ? 'สแกนเพื่อตรวจนับ Stock<br>สำหรับผู้ตรวจนับเท่านั้น' : 'สแกนเพื่อเบิก PPE<br>กรอกแผนกและชื่อพนักงานทุกครั้ง') + '</p></div>');
+  const title = isC ? 'ตรวจนับ Stock' : isL ? 'ยืมอุปกรณ์' : 'เบิก PPE';
+  const printQr = () => printDoc('QR ' + title + ' ' + l.name, '<div style="text-align:center"><h1 style="font-size:34px;margin:10px 0">' + title + ' — ' + esc(l.name) + '</h1><div style="width:420px;margin:20px auto">' + qrSvg(url, 8).replace(/<svg /, '<svg style="width:100%;height:auto" ') + '</div><p style="font-size:22px">' + (isC ? 'สแกนเพื่อตรวจนับ Stock<br>สำหรับผู้ตรวจนับเท่านั้น' : isL ? 'สแกนเพื่อยืมอุปกรณ์<br>กรอกแผนกและชื่อผู้ยืมทุกครั้ง แล้วนำของมาคืนตามกำหนด' : 'สแกนเพื่อเบิก PPE<br>กรอกแผนกและชื่อพนักงานทุกครั้ง') + '</p></div>');
   const syncMsg = okSync(cfg.syncUrl) ? 'ลิงก์นี้แนบการเชื่อมต่อซิงค์ไว้แล้ว ข้อมูลจากมือถือจะเข้าข้อมูลกลางอัตโนมัติ' : (cfg.syncUrl ? 'ที่อยู่ซิงค์ในหน้าตั้งค่าไม่ถูกต้อง (ต้องขึ้นต้นด้วย https://script.google.com/macros/s/ และลงท้าย /exec) ' : 'ยังไม่ได้ตั้งค่าซิงค์ ') + 'ข้อมูลจะอยู่แค่ในมือถือเครื่องนั้น ตั้งค่าซิงค์ก่อน แล้วค่อยมาสร้าง QR นี้ใหม่';
-  openDlg((isC ? 'ลิงก์และ QR ตรวจนับ Stock — ' : 'ลิงก์และ QR หน้าเบิก PPE — ') + l.name, h('div', {},
-    h('p', { class: 'hint' }, isC ? 'ผู้ตรวจนับสแกน QR นี้ จะเห็นเฉพาะหน้า "ตรวจนับ Stock" ของคลังนี้ นับแบบไม่เห็นยอดในระบบ และบันทึกแล้วปรับยอดให้ตรงอัตโนมัติ — ให้เฉพาะผู้ตรวจนับ เพราะผลการนับปรับสต็อกจริง. ' + syncMsg : 'พนักงานสแกน QR หรือเปิดลิงก์นี้ จะเห็นเฉพาะหน้า "เบิก PPE" ของคลังนี้ (ไม่มีเมนูแอดมิน) ' + syncMsg),
+  openDlg((isC ? 'ลิงก์และ QR ตรวจนับ Stock — ' : isL ? 'ลิงก์และ QR หน้ายืมอุปกรณ์ — ' : 'ลิงก์และ QR หน้าเบิก PPE — ') + l.name, h('div', {},
+    h('p', { class: 'hint' }, isL ? 'พนักงานสแกน QR นี้ จะเห็นเฉพาะหน้า "ยืมอุปกรณ์" ของคลังนี้ (ไม่มีเมนูแอดมิน) ยืมได้อย่างเดียว — การรับคืนแอดมินเป็นผู้บันทึกหลังตรวจของ. ' + syncMsg : isC ? 'ผู้ตรวจนับสแกน QR นี้ จะเห็นเฉพาะหน้า "ตรวจนับ Stock" ของคลังนี้ นับแบบไม่เห็นยอดในระบบ และบันทึกแล้วปรับยอดให้ตรงอัตโนมัติ — ให้เฉพาะผู้ตรวจนับ เพราะผลการนับปรับสต็อกจริง. ' + syncMsg : 'พนักงานสแกน QR หรือเปิดลิงก์นี้ จะเห็นเฉพาะหน้า "เบิก PPE" ของคลังนี้ (ไม่มีเมนูแอดมิน) ' + syncMsg),
     qbox, h('input', { type: 'text', value: url, readonly: true, onclick: e => e.target.select() })),
-    [h('button', { class: 'btn sec', onclick: closeDlg }, 'ปิด'), isC ? h('button', { class: 'btn sec', onclick: printQr }, 'พิมพ์ QR') : h('button', { class: 'btn', onclick: () => printPosters([l]) }, 'พิมพ์โปสเตอร์ติดประกาศ'), h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'), () => toast('คัดลอกไม่ได้ — เลือกข้อความแล้วคัดลอกเอง')) }, 'คัดลอกลิงก์')]);
+    [h('button', { class: 'btn sec', onclick: closeDlg }, 'ปิด'), (isC || isL) ? h('button', { class: 'btn sec', onclick: printQr }, 'พิมพ์ QR') : h('button', { class: 'btn', onclick: () => printPosters([l]) }, 'พิมพ์โปสเตอร์ติดประกาศ'), h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'), () => toast('คัดลอกไม่ได้ — เลือกข้อความแล้วคัดลอกเอง')) }, 'คัดลอกลิงก์')]);
 }
 
 /* ============ โปสเตอร์ QR เบิก PPE (ติดประกาศ) ============ */
@@ -3709,7 +3749,7 @@ PAGES.settings = function () {
     const nm = h('input', { type: 'text', value: l.name }); nm.addEventListener('change', () => { l.name = nm.value.trim() || l.name; commit(); });
     const col = selectEl(LOC_COLORS.map((c, i) => [c, 'สี ' + (i + 1)]), l.color, v => { l.color = v; commit(); }, { 'aria-label': 'สีของคลัง', style: 'border-left:10px solid ' + l.color });
     lt.append(h('tr', {}, h('td', {}, nm), h('td', {}, col), h('td', {}, l.main ? h('span', { class: 'badge ok' }, 'คลังหลัก') : h('button', { class: 'btn sm sec', onclick: () => { store.locations.forEach(x => x.main = x.id === l.id); commit(); } }, 'ตั้งเป็นหลัก')),
-      h('td', {}, cdIn(l)), h('td', {}, h('div', { class: 'bar' }, h('button', { class: 'btn sm sec', onclick: () => kioskLink(l) }, 'QR เบิก PPE'), h('button', { class: 'btn sm sec', onclick: () => kioskLink(l, 'count') }, 'QR ตรวจนับ'))), h('td', {}, h('span', { class: 'mut' }, itemsAt(l.id).length + ' รายการ')), h('td', { class: 'r' }, h('button', { class: 'btn sm danger', onclick: () => {
+      h('td', {}, cdIn(l)), h('td', {}, h('div', { class: 'bar' }, h('button', { class: 'btn sm sec', onclick: () => kioskLink(l) }, 'QR เบิก PPE'), h('button', { class: 'btn sm sec', onclick: () => kioskLink(l, 'count') }, 'QR ตรวจนับ'), h('button', { class: 'btn sm sec', onclick: () => kioskLink(l, 'lend') }, 'QR ยืมอุปกรณ์'))), h('td', {}, h('span', { class: 'mut' }, itemsAt(l.id).length + ' รายการ')), h('td', { class: 'r' }, h('button', { class: 'btn sm danger', onclick: () => {
         if (store.locations.length <= 1) return toast('ต้องมีอย่างน้อย 1 คลัง'); if (l.main) return toast('ลบคลังหลักไม่ได้ — ตั้งคลังอื่นเป็นหลักก่อน');
         if (itemsAt(l.id).length) return toast('คลังนี้ยังมีรายการ PPE อยู่ ลบไม่ได้'); if (!confirm('ลบคลัง ' + l.name + '?')) return;
         store.locations = store.locations.filter(x => x.id !== l.id); if (cfg.loc === l.id) { cfg.loc = mainLoc().id; saveCfg(); } commit();
@@ -3752,13 +3792,382 @@ PAGES.settings = function () {
     h('button', { class: 'btn danger', onclick: () => { const ids = store.moves.filter(m => m.kind !== 'open').map(m => m.id).concat(store.counts.map(x => x.id)); if (!ids.length) return toast('ไม่มีรายการให้ล้าง'); if (!confirm('ล้างข้อมูลทดสอบ: ลบประวัติ เบิก / จ่าย / รับเข้า / โอน / ตรวจนับ ทั้งหมด ' + ids.length + ' รายการ ของทุกคลัง (เหลือแต่ยอดยกมาจาก Excel) ลบแล้วกู้คืนไม่ได้ ยืนยัน?')) return; if (!confirm('ยืนยันอีกครั้ง — แน่ใจว่าไม่มีรายการจริงปนอยู่?')) return; purge(ids); toast('ล้างข้อมูลทดสอบแล้ว ' + ids.length + ' รายการ'); } }, 'ล้างข้อมูลทดสอบ'),
     h('button', { class: 'btn danger', onclick: () => { if (!confirm('คืนค่าเป็นข้อมูลตั้งต้น (รายการ PPE จาก Excel)? ข้อมูลที่บันทึกไว้ทั้งหมดจะหาย')) return; store = normalize(JSON.parse(JSON.stringify(SEED))); store.rev = Date.now(); cfg.loc = mainLoc().id; saveCfg(); balCache = null; save(); render(); push(); toast('คืนค่าแล้ว'); } }, 'คืนค่าข้อมูลตั้งต้น')),
     h('p', { class: 'hint', style: 'margin-top:12px' }, store.items.length + ' รายการ PPE · ' + store.moves.length + ' ความเคลื่อนไหว · ' + store.locations.length + ' คลัง')));
+  page.append(h('div', { class: 'card' }, h('h2', {}, 'ข้อมูลยืม-คืนอุปกรณ์'), h('p', { class: 'hint' }, 'เก็บแยกจากข้อมูลเบิก-จ่าย PPE (บนระบบกลางเป็นไฟล์ ppe-loan-data.json) · ' + LS.litems.length + ' อุปกรณ์ · ' + LS.loans.length + ' รายการยืม-คืน'), h('div', { class: 'bar' },
+    h('button', { class: 'btn sec', onclick: () => download('ppe-loan-backup-' + today() + '.json', JSON.stringify(LS), 'application/json') }, 'ส่งออกข้อมูลยืม-คืน (JSON)'),
+    h('button', { class: 'btn sec', onclick: () => { const inp = h('input', { type: 'file', accept: '.json' }); inp.addEventListener('change', () => { const f = inp.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { try { const d = JSON.parse(rd.result); if (!d || !Array.isArray(d.litems)) throw 0; if (!confirm('แทนที่ข้อมูลยืม-คืนทั้งหมดด้วยไฟล์นี้? (ข้อมูลเบิก-จ่าย PPE ไม่เปลี่ยน)')) return; LS = normLoan(d); lcommit(); toast('กู้คืนข้อมูลยืม-คืนแล้ว'); } catch (e) { toast('ไฟล์ไม่ถูกต้อง'); } }; rd.readAsText(f); }); inp.click(); } }, 'นำเข้าข้อมูลยืม-คืน'))));
   return page;
 };
 
+/* ============ ใบเบิก / ใบยืม เป็นรูปภาพ (ดาวน์โหลดได้หลังกดยืนยัน) ============ */
+function slipMeta(r) {
+  const L = r.kind === 'lend';
+  return {
+    title: L ? 'ใบยืมอุปกรณ์' : 'ใบเบิก PPE',
+    meta: [['เลขที่', r.no || '—'], ['คลัง', r.loc], [L ? 'วันที่ยืม' : 'วันที่', thDate(r.date)], [L ? 'ผู้ยืม' : 'ผู้เบิก', r.name], ['แผนก', r.dept]]
+      .concat(L ? [['กำหนดคืน', r.due ? thDate(r.due) : 'ไม่กำหนด']] : []).concat(r.note ? [['หมายเหตุ', r.note]] : []),
+    sign: L ? 'ลงชื่อผู้ยืม' : 'ลงชื่อผู้เบิก'
+  };
+}
+async function slipCanvas(r) {
+  try { await document.fonts.load('600 20px Sarabun'); await document.fonts.load('400 18px Sarabun'); } catch (e) { }
+  const S = slipMeta(r), W = 760, P = 34, FF = '"Sarabun","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif';
+  const c = document.createElement('canvas'), x = c.getContext('2d');
+  let seg = null; try { seg = new Intl.Segmenter('th', { granularity: 'word' }); } catch (e) { }
+  const words = t => seg ? [...seg.segment(String(t))].map(s => s.segment) : String(t).split(/(?=\s)/);
+  function wrap(t, w, font) {
+    x.font = font; const out = []; let cur = '';
+    words(t).forEach(wd => { if (cur && x.measureText(cur + wd).width > w) { out.push(cur); cur = wd.replace(/^\s+/, ''); } else cur += wd; });
+    if (cur || !out.length) out.push(cur); return out;
+  }
+  function paint(draw) {
+    let y = 0;
+    const tx = (t, xx, yy, font, color, align) => { if (!draw) return; x.font = font; x.fillStyle = color || '#14212B'; x.textAlign = align || 'left'; x.textBaseline = 'alphabetic'; x.fillText(t, xx, yy); };
+    if (draw) { x.fillStyle = '#fff'; x.fillRect(0, 0, W, c.height); x.fillStyle = '#0E5A63'; x.fillRect(0, 0, W, 96); }
+    tx(S.title, P, 52, '700 32px ' + FF, '#fff'); tx('PPE Store · ' + r.loc, P, 80, '400 17px ' + FF, '#CFE8EA');
+    tx(r.no || '', W - P, 52, '600 18px ' + FF, '#fff', 'right');
+    y = 132;
+    S.meta.forEach(([k, v]) => {
+      tx(k, P, y, '400 17px ' + FF, '#56677A');
+      wrap(v, W - P * 2 - 150, '600 18px ' + FF).forEach((ln, i) => { tx(ln, P + 150, y + i * 26, '600 18px ' + FF); if (i) y += 26; });
+      y += 32;
+    });
+    y += 8;
+    if (draw) { x.fillStyle = '#F3F6F9'; x.fillRect(P, y, W - P * 2, 40); }
+    tx('รายการ', P + 12, y + 27, '600 16px ' + FF, '#56677A'); tx('จำนวน', W - P - 12, y + 27, '600 16px ' + FF, '#56677A', 'right');
+    y += 40;
+    r.lines.forEach((l, n) => {
+      const ls = wrap((n + 1) + '. ' + l.name, W - P * 2 - 190, '400 18px ' + FF), hh = 18 + ls.length * 26;
+      ls.forEach((ln, i) => tx(ln, P + 12, y + 30 + i * 26, '400 18px ' + FF));
+      tx(qf(l.qty) + ' ' + l.unit, W - P - 12, y + 30, '600 18px ' + FF, '#14212B', 'right');
+      y += hh; if (draw) { x.fillStyle = '#D9E0E7'; x.fillRect(P, y, W - P * 2, 1); }
+    });
+    y += 70;
+    if (draw) { x.fillStyle = '#14212B'; x.fillRect(P + 150, y, 300, 1); }
+    tx(S.sign, P, y - 4, '400 17px ' + FF, '#56677A');
+    y += 44; const d = new Date();
+    tx('ออกเอกสารเมื่อ ' + thDate(today()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()), P, y, '400 14px ' + FF, '#8A97A3');
+    return y + 30;
+  }
+  const H = paint(false), k = 2; c.width = W * k; c.height = H * k; x.scale(k, k);
+  paint(true);
+  return c;
+}
+async function saveSlip(r) {
+  try {
+    const c = await slipCanvas(r);
+    c.toBlob(b => { if (!b) return toast('สร้างไฟล์ไม่ได้'); const a = h('a', { href: URL.createObjectURL(b), download: (r.no || 'slip') + '.png' }); document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); toast('ดาวน์โหลดแล้ว — ถ้าไม่ขึ้นไฟล์ ให้กดค้างที่รูปแล้วเลือกบันทึกรูป'); }, 'image/png');
+  } catch (e) { toast('ดาวน์โหลดไม่ได้ — ใช้วิธีกดค้างที่รูปแล้วบันทึก'); }
+}
+function slipBtn(r) { return h('button', { class: 'btn', onclick: () => saveSlip(r) }, r.kind === 'lend' ? '⬇ ดาวน์โหลดใบยืม' : '⬇ ดาวน์โหลดใบเบิก'); }
+function slipBox(r) {
+  if (!r) return null;
+  const im = h('div', { style: 'margin:12px auto 0;max-width:420px' }, h('p', { class: 'hint', style: 'margin:0' }, 'กำลังสร้างใบ…'));
+  slipCanvas(r).then(c => { im.textContent = ''; im.append(h('img', { src: c.toDataURL('image/png'), alt: slipMeta(r).title + ' ' + (r.no || ''), style: 'width:100%;border:1px solid var(--line);border-radius:8px;background:#fff' }), h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'ถ้ากดดาวน์โหลดไม่ได้ (เช่น เปิดจาก LINE) ให้กดค้างที่รูปแล้วเลือก "บันทึกรูป" หรือแคปหน้าจอไว้')); }).catch(() => { im.textContent = ''; });
+  return h('div', {}, h('div', { class: 'bar', style: 'justify-content:center;margin-top:6px' }, slipBtn(r)), im);
+}
+const slipNo = (pre, d, ref) => pre + '-' + String(d || today()).replace(/-/g, '') + '-' + ref.slice(-4).toUpperCase();
+
+/* ============ ยืม-คืนอุปกรณ์ — ข้อมูลแยกจากเบิก-จ่าย PPE (ไม่กระทบยอด Stock) ============ */
+const LKEY = 'ppe_v2_loans';
+let LS = null, lbalCache = null;
+const addDays = (d, n) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return x.getFullYear() + '-' + pad(x.getMonth() + 1) + '-' + pad(x.getDate()); };
+const COND = { ok: 'สภาพดี', bad: 'ชำรุด', lost: 'สูญหาย' };
+function normLoan(s) {
+  s = s && typeof s === 'object' ? s : {};
+  s.litems = Array.isArray(s.litems) ? s.litems : []; s.loans = Array.isArray(s.loans) ? s.loans : []; s.del = Array.isArray(s.del) ? s.del : [];
+  delete s.kind; s.rev = s.rev || 0;
+  s.litems.forEach(i => {
+    i.total = +i.total || 0; i.unit = i.unit || 'ชิ้น'; i.code = i.code || ''; i.size = i.size || ''; i.sizeGroup = i.sizeGroup || ''; i.image = i.image || ''; i.pref = i.pref || '';
+    if (!CAT_NAMES.includes(i.category)) i.category = 'ป้องกันอื่นๆ'; if (!i.loc) i.loc = mainLoc().id;
+  });
+  s.loans.forEach(m => { m.qty = +m.qty || 0; });
+  return s;
+}
+function loadLoan() { let s = null; try { s = JSON.parse(localStorage.getItem(LKEY) || 'null'); } catch (e) { } LS = normLoan(s); }
+function saveLoan() { try { localStorage.setItem(LKEY, JSON.stringify(LS)); } catch (e) { toast('พื้นที่จัดเก็บในเบราว์เซอร์เต็ม'); } }
+function lcommit() { if (!ui.kiosk) { LS.rev = Date.now(); if (cfg.syncUrl) { cfg.ldirty = true; saveCfg(); } } lbalCache = null; saveLoan(); render(); loanPush(); }
+const litemById = id => LS.litems.find(i => i.id === id);
+const litemsAt = loc => LS.litems.filter(i => i.loc === loc).sort((a, b) => cmpTh(a.code || '~', b.code || '~') || cmpTh(a.name, b.name));
+const limg = i => i.image || ((store.items.find(x => x.id === i.pref) || {}).image) || '';
+const lname = id => { const i = litemById(id); return i ? i.name + (i.size ? ' (ไซส์ ' + i.size + ')' : '') : '—'; };
+function lstat() {
+  if (lbalCache) return lbalCache;
+  const it = {}, ln = {}, g = id => it[id] = it[id] || { out: 0, ret: 0, bad: 0 };
+  LS.loans.forEach(m => {
+    if (m.type === 'out') g(m.item).out += m.qty;
+    else if (m.type === 'ret') { const x = g(m.item); x.ret += m.qty; if (m.cond !== 'ok') x.bad += m.qty; ln[m.loan] = (ln[m.loan] || 0) + m.qty; }
+  });
+  return lbalCache = { it, ln };
+}
+const lout = i => { const x = lstat().it[i.id]; return x ? x.out - x.ret : 0; };
+const lbad = i => (lstat().it[i.id] || {}).bad || 0;
+const lavail = i => Math.max(0, i.total - lout(i) - lbad(i));
+const lleft = m => m.qty - (lstat().ln[m.id] || 0);
+const openLoans = loc => LS.loans.filter(m => m.type === 'out' && (!loc || m.loc === loc) && lleft(m) > 0);
+const isOverdue = m => !!m.due && m.due < today();
+const lateDays = m => Math.floor((new Date(today() + 'T12:00:00') - new Date(m.due + 'T12:00:00')) / 864e5);
+function addLoan(o) { LS.loans.push(Object.assign({ id: uid(), date: today(), ts: Date.now() + LS.loans.length % 1000 }, ui.kiosk ? { q: 1 } : {}, o)); }
+const loanPending = () => (LS ? LS.loans.filter(m => m.q) : []);
+function purgeLoan(ids) { const dl = new Set(ids); LS.del = [...new Set(LS.del.concat(ids))]; LS.loans = LS.loans.filter(m => !dl.has(m.id)); lcommit(); }
+function loanOldNote() { return ui.loanOld ? h('div', { class: 'note warn' }, h('b', {}, 'โค้ด Apps Script ยังเป็นเวอร์ชันเดิม: '), 'ข้อมูลยืม-คืนจะอยู่แค่ในเครื่องนี้ จนกว่าแอดมินจะวางโค้ด server.gs ใหม่ แล้ว Deploy เป็นเวอร์ชันใหม่ (ข้อมูลเบิก-จ่าย PPE ยังซิงค์ตามปกติ)') : ''; }
+
+/* ---- sync (ไฟล์แยก ppe-loan-data.json) ---- */
+let lpushT = null, lpushing = false, lagain = false;
+function loanPush() { if (!cfg.syncUrl) return; clearTimeout(lpushT); lpushT = setTimeout(doLoanPush, ui.kiosk ? 0 : 900); }
+async function doLoanPush() {
+  if (!ui.loanSrv) { if (!ui.loanOld) loanPull(true); return; }
+  if (lpushing) { lagain = true; return; }
+  const rev0 = LS.rev; let body, sent = [];
+  if (ui.kiosk) { sent = loanPending(); if (!sent.length) return; body = { mode: 'loan_append', loans: sent }; }
+  else { if (!cfg.ldirty) return; if (!authed()) { ui.sync = 'err'; renderRail(); return; } body = { mode: 'loan_full', loan: LS, token: cfg.session.token }; }
+  lpushing = true; ui.sync = 'busy'; renderRail();
+  try {
+    const res = await api(body, 30000);
+    if (res && res.ok === false && res.error === 'auth' && !ui.kiosk) { cfg.session = null; saveCfg(); ui.skipLogin = false; lpushing = false; render(); return; }
+    if (!res || res.ok !== true) throw new Error('bad response');
+    ui.sync = 'on';
+    if (ui.kiosk) { const ids = new Set(sent.map(m => m.id)); LS.loans.forEach(m => { if (ids.has(m.id)) delete m.q; }); saveLoan(); }
+    else if (LS.rev === rev0) { cfg.ldirty = false; saveCfg(); }
+    if (res.added && !ui.kiosk) loanPull(true);
+  } catch (e) { ui.sync = 'err'; ui.syncErr = (e && e.message) || 'error'; }
+  lpushing = false; if (ui.kiosk) render(); else renderRail();
+  if (lagain) { lagain = false; loanPush(); }
+}
+async function loanPull(silent, ms) {
+  if (!cfg.syncUrl) return;
+  try {
+    const ctl = ms ? new AbortController() : null, tm = ms ? setTimeout(() => ctl.abort(), ms) : 0;
+    let d; try { const r = await fetch(cfg.syncUrl + (cfg.syncUrl.includes('?') ? '&' : '?') + 'p=loan', ctl ? { signal: ctl.signal } : undefined); d = await r.json(); } finally { clearTimeout(tm); }
+    if (!d || typeof d !== 'object') throw new Error('bad data');
+    if (d.kind !== 'loan') { if (!ui.loanOld) { ui.loanOld = true; render(); } return; }
+    const was = ui.loanOld; ui.loanOld = false; ui.loanSrv = true;
+    let changed = was;
+    const dirty = !ui.kiosk && cfg.ldirty;
+    if ((d.rev || 0) > LS.rev && !dirty) {
+      const have = new Set((d.loans || []).map(m => m.id)), queued = LS.loans.filter(m => m.q && !have.has(m.id));
+      LS = normLoan(d); queued.forEach(m => LS.loans.push(m)); changed = true;
+    } else {
+      const mine = new Set(LS.loans.map(m => m.id)), dels = new Set(LS.del.concat(d.del || [])), its = new Set(LS.litems.map(i => i.id));
+      const add = (d.loans || []).filter(m => !mine.has(m.id) && !dels.has(m.id) && its.has(m.item));
+      if (add.length) { add.forEach(m => LS.loans.push(m)); changed = true; }
+      const nd = (d.del || []).filter(x => !LS.del.includes(x));
+      if (nd.length) { const s2 = new Set(nd); LS.del = LS.del.concat(nd); LS.loans = LS.loans.filter(m => !s2.has(m.id)); changed = true; }
+    }
+    if (ui.kiosk ? loanPending().length : cfg.ldirty) loanPush();
+    if (changed) { lbalCache = null; saveLoan(); render(); }
+  } catch (e) { if (!silent) toast('ดึงข้อมูลยืม-คืนไม่ได้'); }
+}
+
+/* ---- หน้า: ยืมอุปกรณ์ (พนักงานผ่าน QR หรือแอดมิน) ---- */
+const newLend = () => ({ lines: [], dept: '', other: '', name: '', date: today(), due: addDays(today(), 7), note: '', receipt: null });
+function loanCart(lines, redraw) {
+  if (!lines.length) return h('div', { class: 'empty' }, 'ยังไม่ได้เลือกอุปกรณ์');
+  return h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'อุปกรณ์'), h('th', { class: 'r' }, 'จำนวน'), h('th', {}, ''))),
+    h('tbody', {}, lines.map(l => {
+      const q = h('input', { type: 'number', min: '1', step: '1', value: l.qty, style: 'width:76px', 'aria-label': 'จำนวน' });
+      q.addEventListener('change', () => { const n = parseFloat(q.value), mx = lavail(l.it); if (!(n > 0)) { q.value = l.qty; return toast('กรอกจำนวนให้ถูกต้อง'); } if (n > mx) { q.value = l.qty; return toast('ว่างให้ยืมไม่พอ (ว่าง ' + qf(mx) + ')'); } l.qty = n; redraw(); });
+      return h('tr', {}, h('td', {}, lname(l.it.id)), h('td', { class: 'r' }, q, ' ', h('span', { class: 'mut' }, l.it.unit)),
+        h('td', { class: 'r' }, h('button', { class: 'btn sm sec', 'aria-label': 'ลบ', onclick: () => { lines.splice(lines.indexOf(l), 1); redraw(); } }, '✕')));
+    }))));
+}
+PAGES.lend = function () {
+  const loc = cfg.loc, B = ui.lend = ui.lend || newLend(), page = h('div');
+  if (B.finished) return donePage('บันทึกการยืมเรียบร้อย กรุณานำอุปกรณ์มาคืนตามกำหนด', () => { B.finished = false; B.last = null; render(); }, 'ยืมอีกครั้ง', slipBox(B.last));
+  page.append(pageHead('ยืมอุปกรณ์', 'ยืมจากคลัง ' + locName(loc) + ' — ของที่ยืมต้องนำมาคืน (แยกจากการเบิก PPE ไม่ตัดยอด Stock)', isKiosk() ? null : h('button', { class: 'btn sec', onclick: () => go('lret') }, 'ไปหน้ารับคืน')));
+  page.append(loanOldNote());
+  if (isKiosk() && !cfg.syncUrl && !B.receipt) page.append(syncNote());
+  if (B.receipt) {
+    const r = B.receipt;
+    page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกการยืมแล้ว'), syncNote(), cautionBox(),
+      h('p', { style: 'margin:4px 0 8px' }, r.no + ' · ' + r.name + ' · แผนก ' + r.dept + ' · ยืม ' + thDate(r.date) + ' · กำหนดคืน ' + (r.due ? thDate(r.due) : 'ไม่กำหนด')),
+      h('ul', { style: 'margin:0 0 10px;padding-left:20px' }, r.lines.map(l => h('li', {}, l.name + ' × ' + qf(l.qty) + ' ' + l.unit))),
+      h('div', { class: 'bar' }, slipBtn(r), finishBtn(() => { B.last = B.receipt; B.receipt = null; B.finished = true; render(); }), h('button', { class: 'btn sec', onclick: () => { B.receipt = null; render(); } }, 'ยืมรายการถัดไป'))));
+  }
+  const items = litemsAt(loc);
+  if (!items.length) { page.append(h('div', { class: 'empty' }, 'คลังนี้ยังไม่มีอุปกรณ์ให้ยืม', isKiosk() ? null : [' — ', h('button', { class: 'btn sm', onclick: () => go('litems') }, 'ไปเพิ่มอุปกรณ์ให้ยืม')])); return page; }
+  const cartBox = h('div'), left = h('div', { class: 'card' }), right = h('div', { class: 'card sticky' });
+  left.append(h('h2', {}, 'เลือกอุปกรณ์ที่จะยืม'), picker({
+    items: items.map(i => Object.assign({}, i, { image: limg(i) })), info: it => 'ว่าง ' + qf(lavail(it)) + ' ' + it.unit,
+    onAdd: (cp, n) => { const it = litemById(cp.id), mx = lavail(it), ex = B.lines.find(l => l.it.id === it.id), cur = ex ? ex.qty : 0;
+      if (cur + n > mx) return toast('ว่างให้ยืมไม่พอ (ว่าง ' + qf(mx) + ' ' + it.unit + ')');
+      if (ex) ex.qty += n; else B.lines.push({ it, qty: n }); toast('เพิ่ม ' + it.name); drawCart(); }
+  }));
+  const deptWrap = h('div', { class: 'field' });
+  function drawDept() {
+    deptWrap.textContent = ''; deptWrap.append(h('label', {}, 'แผนก *'));
+    const s = h('select', { 'aria-label': 'แผนก' }); s.append(h('option', { value: '' }, '— เลือกแผนก —'));
+    deptNames().forEach(d => s.append(h('option', { value: d }, d)));
+    s.value = B.dept; s.addEventListener('change', () => { B.dept = s.value; if (!isOther(B.dept)) B.other = ''; drawDept(); });
+    deptWrap.append(s);
+    if (isOther(B.dept)) { const o = h('input', { type: 'text', placeholder: 'โปรดระบุแผนก / หน่วยงาน *', value: B.other || '', style: 'margin-top:8px' }); o.addEventListener('input', () => B.other = o.value); deptWrap.append(o); }
+  }
+  drawDept();
+  const nm = h('input', { type: 'text', placeholder: 'ชื่อ-นามสกุล', value: B.name, autocomplete: 'off' }); nm.addEventListener('input', () => B.name = nm.value);
+  const du = h('input', { type: 'date', value: B.due, min: today() }); du.addEventListener('change', () => B.due = du.value);
+  const nt = h('input', { type: 'text', placeholder: 'เช่น ใช้งานที่ไหน / หมายเลขอุปกรณ์ (ถ้ามี)', value: B.note }); nt.addEventListener('input', () => B.note = nt.value);
+  const sp = () => h('div', { style: 'height:10px' });
+  right.append(h('h2', {}, 'ใบยืม'), deptWrap, sp(), field('ชื่อผู้ยืม * (ต้องกรอกทุกครั้ง)', nm), sp(), field('กำหนดคืน (เว้นว่าง = ไม่กำหนด)', du), sp(), field('หมายเหตุ', nt),
+    h('h2', { style: 'margin:16px 0 8px' }, 'รายการที่จะยืม'), cartBox, h('button', { class: 'btn big', style: 'width:100%;margin-top:12px', onclick: submit }, 'บันทึกการยืม'));
+  function drawCart() { cartBox.textContent = ''; cartBox.append(loanCart(B.lines, drawCart)); }
+  drawCart();
+  function submit() {
+    const dept = (B.dept || '').trim(), name = (B.name || '').trim(), other = (B.other || '').trim();
+    if (!B.lines.length) return toast('ยังไม่ได้เลือกอุปกรณ์');
+    if (!dept) return toast('กรุณาเลือกแผนก');
+    if (isOther(dept) && !other) return toast('กรุณาระบุแผนก / หน่วยงาน');
+    if (!name) return toast('กรุณากรอกชื่อผู้ยืม');
+    for (const l of B.lines) if (l.qty > lavail(l.it)) return toast('ว่างให้ยืมไม่พอ: ' + l.it.name);
+    const ref = uid(), no = slipNo('BR', today(), ref), dfull = dept + (other ? ' (' + other + ')' : '');
+    B.lines.forEach(l => addLoan({ type: 'out', item: l.it.id, loc, qty: l.qty, name, dept: dfull, due: B.due || '', note: B.note.trim(), ref, no, by: isKiosk() ? name : (cfg.user || name) }));
+    ui.lend = Object.assign(newLend(), { receipt: { kind: 'lend', no, name, dept: dfull, date: today(), due: B.due || '', note: B.note.trim(), loc: locName(loc), lines: B.lines.map(l => ({ name: lname(l.it.id), qty: l.qty, unit: l.it.unit })) } });
+    lcommit(); window.scrollTo(0, 0);
+  }
+  page.append(h('div', { class: 'split' }, left, right));
+  if (!isKiosk()) {
+    const op = openLoans(loc), od = op.filter(isOverdue);
+    page.append(h('div', { class: 'note' + (od.length ? ' warn' : ''), style: 'margin-top:16px' }, 'ค้างคืนอยู่ ' + op.length + ' รายการ' + (od.length ? ' · เกินกำหนด ' + od.length + ' รายการ' : ''), ' ', h('button', { class: 'btn sm sec', onclick: () => go('lret') }, 'ดูรายการค้างคืน')));
+  }
+  return page;
+};
+
+/* ---- หน้า: รับคืน / ค้างคืน (แอดมิน) ---- */
+PAGES.lret = function () {
+  const loc = cfg.loc, F = ui.lret = ui.lret || { q: '', od: false }, page = h('div');
+  const all = openLoans(loc).sort((a, b) => (isOverdue(b) - isOverdue(a)) || cmpTh(a.due || '9', b.due || '9') || a.ts - b.ts), od = all.filter(isOverdue);
+  page.append(pageHead('รับคืนอุปกรณ์ — ' + locName(loc), 'รายการที่ยังไม่คืน ตรวจสภาพของแล้วกด "รับคืน" (คืนบางส่วนได้)',
+    h('button', { class: 'btn sec', onclick: () => exportCsv('loans-open-' + loc + '-' + today() + '.csv', [['เลขที่', 'วันที่ยืม', 'ผู้ยืม', 'แผนก', 'อุปกรณ์', 'ค้างคืน', 'หน่วย', 'กำหนดคืน', 'เกินกำหนด (วัน)', 'หมายเหตุ']].concat(all.map(m => { const it = litemById(m.item) || {}; return [m.no || '', m.date, m.name, m.dept, lname(m.item), lleft(m), it.unit, m.due || '', isOverdue(m) ? lateDays(m) : '', m.note || '']; }))) }, 'ส่งออก CSV'),
+    h('button', { class: 'btn', onclick: () => go('lend') }, '+ บันทึกการยืม')));
+  page.append(loanOldNote());
+  page.append(h('div', { class: 'kpis' },
+    h('div', { class: 'kpi' }, h('b', {}, all.length), h('span', {}, 'รายการค้างคืน')),
+    h('div', { class: 'kpi' }, h('b', {}, qf(all.reduce((s, m) => s + lleft(m), 0))), h('span', {}, 'ชิ้นที่อยู่กับผู้ยืม')),
+    h('div', { class: 'kpi' + (od.length ? ' warn' : '') }, h('button', { onclick: () => { F.od = !F.od; render(); } }, h('b', {}, od.length), h('span', {}, 'เกินกำหนดคืน — กดเพื่อกรอง'))),
+    h('div', { class: 'kpi' }, h('b', {}, new Set(all.map(m => m.name + '|' + m.dept)).size), h('span', {}, 'คนที่ยังไม่คืน'))));
+  const qi = h('input', { type: 'search', value: F.q, placeholder: 'ค้นหาชื่อผู้ยืม / แผนก / อุปกรณ์ / เลขที่' }); qi.addEventListener('change', () => { F.q = qi.value; render(); });
+  const q = F.q.trim().toLowerCase();
+  const rows = all.filter(m => (!F.od || isOverdue(m)) && (!q || [m.name, m.dept, lname(m.item), m.no].join(' ').toLowerCase().includes(q)));
+  const card = h('div', { class: 'card' }, h('div', { class: 'bar', style: 'margin-bottom:10px' }, h('div', { style: 'flex:1;min-width:220px' }, qi), h('button', { class: 'chip', 'aria-pressed': F.od, onclick: () => { F.od = !F.od; render(); } }, 'เฉพาะเกินกำหนด')));
+  if (!rows.length) card.append(h('div', { class: 'empty' }, all.length ? 'ไม่พบรายการ' : 'ไม่มีอุปกรณ์ค้างคืน 🎉'));
+  else card.append(h('div', { class: 'tw', style: 'max-height:70vh' }, h('table', {}, h('thead', {}, h('tr', {}, ['ผู้ยืม', 'อุปกรณ์', 'ค้างคืน', 'ยืม / กำหนดคืน', 'รับคืน'].map((x, i) => h('th', { class: i === 2 ? 'r' : '' }, x)))),
+    h('tbody', {}, rows.map(m => {
+      const it = litemById(m.item) || { unit: '' }, left = lleft(m);
+      const qn = h('input', { type: 'number', min: '1', max: String(left), step: '1', value: left, style: 'width:70px', 'aria-label': 'จำนวนที่รับคืน' });
+      const cd = selectEl(Object.keys(COND).map(k => [k, COND[k]]), 'ok', null, { style: 'width:auto', 'aria-label': 'สภาพ' });
+      const btn = h('button', { class: 'btn sm', onclick: () => {
+        const n = parseFloat(qn.value); if (!(n > 0) || n > left) return toast('จำนวนไม่ถูกต้อง (ค้างคืน ' + qf(left) + ')');
+        if (cd.value !== 'ok' && !confirm('บันทึกว่า "' + COND[cd.value] + '" ' + qf(n) + ' ' + it.unit + '?\nจำนวนนี้จะถูกหักออกจากของที่ให้ยืมได้ (ถ้าซื้อมาแทน ให้เพิ่ม "จำนวนทั้งหมด" ที่หน้าอุปกรณ์ให้ยืม)')) return;
+        addLoan({ type: 'ret', loan: m.id, item: m.item, loc: m.loc, qty: n, cond: cd.value, name: m.name, dept: m.dept, no: m.no || '', by: cfg.user || '' });
+        lcommit(); toast('รับคืนแล้ว: ' + lname(m.item) + ' × ' + qf(n));
+      } }, 'รับคืน');
+      return h('tr', {}, h('td', {}, h('b', {}, m.name || '—'), h('div', { class: 'mut', style: 'font-size:12px' }, [m.dept, m.no].filter(Boolean).join(' · '))),
+        h('td', {}, lname(m.item), m.note ? h('div', { class: 'mut', style: 'font-size:12px' }, m.note) : null),
+        h('td', { class: 'r num' }, qf(left) + ' ' + it.unit, left < m.qty ? h('div', { class: 'mut', style: 'font-size:12px' }, 'จาก ' + qf(m.qty)) : null),
+        h('td', {}, thDate(m.date), h('div', {}, m.due ? (isOverdue(m) ? h('span', { class: 'badge warn' }, 'เกิน ' + lateDays(m) + ' วัน (' + thDate(m.due) + ')') : h('span', { class: 'badge' }, 'คืน ' + thDate(m.due))) : h('span', { class: 'badge' }, 'ไม่กำหนด'))),
+        h('td', {}, h('div', { class: 'bar', style: 'flex-wrap:nowrap' }, qn, cd, btn)));
+    })))));
+  page.append(card);
+  return page;
+};
+
+/* ---- หน้า: ประวัติยืม-คืน ---- */
+PAGES.llog = function () {
+  const loc = cfg.loc, G = ui.llog = ui.llog || { month: thisMonth(), type: '', q: '' }, page = h('div');
+  page.append(pageHead('ประวัติยืม-คืน — ' + locName(loc), 'บันทึกการยืมและการรับคืนอุปกรณ์ (แยกจากประวัติเบิก-จ่าย PPE)'));
+  page.append(loanOldNote());
+  const q = G.q.trim().toLowerCase();
+  const list = LS.loans.filter(m => m.loc === loc && (!G.month || (m.date || '').slice(0, 7) === G.month) && (!G.type || m.type === G.type) && (!q || [m.name, m.dept, lname(m.item), m.no].join(' ').toLowerCase().includes(q))).sort((a, b) => b.ts - a.ts);
+  const qi = h('input', { type: 'search', value: G.q, placeholder: 'ค้นหาชื่อ / แผนก / อุปกรณ์' }); qi.addEventListener('change', () => { G.q = qi.value; render(); });
+  page.append(h('div', { class: 'card' }, h('div', { class: 'row' },
+    field('เดือน', selectEl([['', 'ทุกเดือน']].concat(lastMonths(24).reverse().map(m => [m, monthLabel(m)])), G.month, v => { G.month = v; render(); })),
+    field('ประเภท', selectEl([['', 'ยืม และ คืน'], ['out', 'เฉพาะยืม'], ['ret', 'เฉพาะคืน']], G.type, v => { G.type = v; render(); })), field('ค้นหา', qi)),
+    h('div', { class: 'bar', style: 'justify-content:space-between;margin-bottom:8px' }, h('span', { class: 'mut' }, list.length + ' รายการ'),
+      h('button', { class: 'btn sm sec', onclick: () => exportCsv('loans-' + (G.month || 'all') + '-' + loc + '.csv', [['วันที่', 'ประเภท', 'เลขที่', 'อุปกรณ์', 'จำนวน', 'หน่วย', 'ผู้ยืม', 'แผนก', 'กำหนดคืน', 'สภาพตอนคืน', 'ผู้บันทึก', 'หมายเหตุ']].concat(list.map(m => { const it = litemById(m.item) || {}; return [m.date, m.type === 'out' ? 'ยืม' : 'คืน', m.no || '', lname(m.item), m.qty, it.unit, m.name, m.dept, m.due || '', m.type === 'ret' ? COND[m.cond] || '' : '', m.by || '', m.note || '']; }))) }, 'ส่งออก CSV')),
+    list.length ? h('div', { class: 'tw', style: 'max-height:68vh' }, h('table', {}, h('thead', {}, h('tr', {}, ['วันที่', 'ประเภท', 'อุปกรณ์', 'จำนวน', 'ผู้ยืม / แผนก', 'สถานะ', ''].map((x, i) => h('th', { class: i === 3 ? 'r' : '' }, x)))),
+      h('tbody', {}, list.map(m => {
+        const it = litemById(m.item) || { unit: '' }, isOut = m.type === 'out';
+        const st = isOut ? (lleft(m) <= 0 ? h('span', { class: 'badge ok' }, 'คืนครบแล้ว') : isOverdue(m) ? h('span', { class: 'badge warn' }, 'ค้างคืน ' + qf(lleft(m)) + ' · เกินกำหนด') : h('span', { class: 'badge act' }, 'ค้างคืน ' + qf(lleft(m))))
+          : h('span', { class: 'badge' + (m.cond === 'ok' ? ' ok' : ' warn') }, COND[m.cond] || '—');
+        return h('tr', {}, h('td', {}, thDate(m.date)), h('td', {}, h('span', { class: 'badge' + (isOut ? ' act' : ' ok') }, isOut ? 'ยืม' : 'คืน')),
+          h('td', {}, lname(m.item), h('div', { class: 'mut', style: 'font-size:12px' }, [m.no, m.note].filter(Boolean).join(' · '))), h('td', { class: 'r' }, qf(m.qty) + ' ' + it.unit),
+          h('td', {}, m.name || '—', h('div', { class: 'mut', style: 'font-size:12px' }, m.dept || '')), h('td', {}, st, m.by && m.by !== m.name ? h('div', { class: 'mut', style: 'font-size:12px' }, 'บันทึกโดย ' + m.by) : null),
+          h('td', { class: 'r' }, h('button', { class: 'btn sm danger', onclick: () => {
+            const ids = isOut ? [m.id].concat(LS.loans.filter(x => x.type === 'ret' && x.loan === m.id).map(x => x.id)) : [m.id];
+            if (confirm(isOut ? 'ลบรายการยืมนี้' + (ids.length > 1 ? ' และการคืนที่เกี่ยวข้อง (' + (ids.length - 1) + ' รายการ)' : '') + '?' : 'ลบรายการคืนนี้? (อุปกรณ์จะกลับเป็นค้างคืน)')) { purgeLoan(ids); toast('ลบแล้ว'); }
+          } }, 'ลบ')));
+      })))) : h('div', { class: 'empty' }, 'ไม่มีรายการ')));
+  return page;
+};
+
+/* ---- หน้า: อุปกรณ์ให้ยืม (ทะเบียนแยกจากรายการ PPE) ---- */
+PAGES.litems = function () {
+  const loc = cfg.loc, all = litemsAt(loc), page = h('div');
+  page.append(pageHead('อุปกรณ์ให้ยืม — ' + locName(loc), all.length + ' รายการ · ทะเบียนนี้แยกจาก Stock PPE',
+    h('button', { class: 'btn sec', onclick: importLoanFromPpe }, 'ดึงชื่อ/รูปจากรายการ PPE'), h('button', { class: 'btn', onclick: () => litemForm() }, '+ เพิ่มอุปกรณ์')));
+  page.append(loanOldNote());
+  page.append(h('div', { class: 'note' }, 'อุปกรณ์ให้ยืม (เช่น รองเท้า ถุงมือ ที่ใช้ซ้ำ) มีจำนวนของตัวเอง การยืม-คืนไม่ตัดหรือเพิ่มยอดคงเหลือ PPE เดิม · ถ้าจะย้ายของจาก Stock PPE มาให้ยืม ให้ใช้เมนู "จ่ายออก (แอดมิน)" เหตุผล "ย้ายไปให้ยืม" แล้วมาเพิ่มจำนวนทั้งหมดที่นี่'));
+  if (!all.length) { page.append(h('div', { class: 'empty' }, 'ยังไม่มีอุปกรณ์ให้ยืมในคลังนี้ — กด "+ เพิ่มอุปกรณ์" หรือ "ดึงชื่อ/รูปจากรายการ PPE"')); return page; }
+  page.append(h('div', { class: 'card' }, h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, ['', 'อุปกรณ์', 'ทั้งหมด', 'ถูกยืมอยู่', 'ชำรุด/สูญหาย', 'ว่างให้ยืม', ''].map((x, i) => h('th', { class: i > 1 && i < 6 ? 'r' : '' }, x)))),
+    h('tbody', {}, all.map(i => { const im = limg(i); return h('tr', {}, h('td', {}, h('div', { class: 'thumb' }, im ? h('img', { src: im, alt: '' }) : i.name.slice(0, 2))),
+      h('td', {}, i.name, h('div', { class: 'mut', style: 'font-size:12px' }, [i.code, i.size && 'ไซส์ ' + i.size, i.category].filter(Boolean).join(' · '))),
+      h('td', { class: 'r num' }, qf(i.total) + ' ' + i.unit), h('td', { class: 'r' }, qf(lout(i))), h('td', { class: 'r' }, lbad(i) ? h('span', { style: 'color:var(--warn)' }, qf(lbad(i))) : '0'),
+      h('td', { class: 'r num' }, lavail(i) > 0 ? qf(lavail(i)) : h('span', { class: 'badge warn' }, 'หมด')),
+      h('td', { class: 'r' }, h('button', { class: 'btn sm sec', onclick: () => litemForm(i.id) }, 'แก้ไข'))); }))))));
+  return page;
+};
+function litemForm(id) {
+  const ex = id ? litemById(id) : null, d = Object.assign({ name: '', code: '', category: 'ป้องกันเท้า', unit: 'คู่', size: '', sizeGroup: '', total: 0, image: '', pref: '' }, ex || {});
+  const inp = (k, type, ph) => { const e = h('input', { type: type || 'text', value: d[k], placeholder: ph || '' }); e.addEventListener('input', () => d[k] = e.value); return e; };
+  const imgBox = h('div', { class: 'bar' });
+  function drawImg() { imgBox.textContent = ''; const im = d.image || ((store.items.find(x => x.id === d.pref) || {}).image) || ''; imgBox.append(h('div', { class: 'thumb', style: 'width:72px;height:72px' }, im ? h('img', { src: im, alt: '' }) : '—'), h('button', { class: 'btn sm sec', onclick: () => pickImage(u => { d.image = u; drawImg(); }) }, 'เลือกรูป'), d.image ? h('button', { class: 'btn sm sec', onclick: () => { d.image = ''; drawImg(); } }, 'ลบรูป') : null); }
+  drawImg();
+  const used = ex ? lout(ex) + lbad(ex) : 0;
+  const body = h('div', {}, h('div', { class: 'row c2' }, field('ชื่ออุปกรณ์ *', inp('name', 'text', 'เช่น รองเท้าเซฟตี้')), field('รหัส', inp('code'))),
+    h('div', { class: 'row c2' }, field('หมวดหมู่', selectEl(CAT_NAMES.map(c => [c, c]), d.category, v => d.category = v)), field('หน่วย', inp('unit', 'text', 'คู่ / ชิ้น / ตัว'))),
+    h('div', { class: 'row c2' }, field('ไซส์', inp('size', 'text', 'เช่น 42')), field('กลุ่มไซส์ (ชื่อเดียวกันจะรวมเป็นตัวเลือกไซส์)', inp('sizeGroup', 'text', 'เช่น รองเท้าเซฟตี้'))),
+    h('div', { class: 'row c2' }, field('จำนวนทั้งหมดที่มีให้ยืม *', inp('total', 'number')), field('รูป', imgBox)),
+    ex ? h('p', { class: 'hint' }, 'ตอนนี้ถูกยืมอยู่ ' + qf(lout(ex)) + ' · ชำรุด/สูญหายสะสม ' + qf(lbad(ex)) + ' · ว่าง ' + qf(lavail(ex))) : null);
+  const foot = [h('button', { class: 'btn sec', onclick: closeDlg }, 'ยกเลิก')];
+  if (ex) foot.unshift(h('button', { class: 'btn danger', onclick: () => {
+    if (LS.loans.some(m => m.item === ex.id)) return toast('มีประวัติยืม-คืนแล้ว ลบไม่ได้ — ตั้งจำนวนทั้งหมดเป็น 0 แทน');
+    if (!confirm('ลบ ' + ex.name + '?')) return; LS.litems = LS.litems.filter(x => x.id !== ex.id); closeDlg(); lcommit();
+  } }, 'ลบ'));
+  foot.push(h('button', { class: 'btn', onclick: () => {
+    const name = String(d.name).trim(), total = Math.max(0, Math.floor(+d.total || 0));
+    if (!name) return toast('กรอกชื่ออุปกรณ์');
+    if (ex && total < lout(ex) + lbad(ex) && !confirm('จำนวนทั้งหมด (' + total + ') น้อยกว่าที่ถูกยืม + ชำรุด (' + used + ') — บันทึกต่อหรือไม่?')) return;
+    const o = { name, code: String(d.code).trim(), category: d.category, unit: String(d.unit).trim() || 'ชิ้น', size: String(d.size).trim(), sizeGroup: String(d.sizeGroup).trim(), total, image: d.image, pref: d.pref };
+    if (ex) Object.assign(ex, o); else LS.litems.push(Object.assign({ id: uid(), loc: cfg.loc }, o));
+    closeDlg(); lcommit(); toast('บันทึกแล้ว');
+  } }, 'บันทึก'));
+  openDlg(ex ? 'แก้ไขอุปกรณ์ให้ยืม' : 'เพิ่มอุปกรณ์ให้ยืม', body, foot);
+}
+function importLoanFromPpe() {
+  const loc = cfg.loc, have = new Set(litemsAt(loc).map(i => i.pref).filter(Boolean)), cand = itemsAt(loc).filter(i => !have.has(i.id)), sel = {}, qty = {};
+  let q = ''; const list = h('div', { class: 'plist' });
+  const qi = h('input', { type: 'search', placeholder: 'ค้นหา เช่น รองเท้า / ถุงมือ' }); qi.addEventListener('input', () => { q = qi.value.toLowerCase(); draw(); });
+  function draw() {
+    list.textContent = ''; const rows = cand.filter(i => !q || (i.name + i.code + i.category).toLowerCase().includes(q));
+    if (!rows.length) list.append(h('div', { class: 'empty' }, cand.length ? 'ไม่พบรายการ' : 'ดึงรายการ PPE ของคลังนี้มาครบแล้ว'));
+    rows.forEach(i => {
+      const cb = h('input', { type: 'checkbox', checked: !!sel[i.id], 'aria-label': 'เลือก ' + i.name }); cb.addEventListener('change', () => sel[i.id] = cb.checked);
+      const n = h('input', { type: 'number', min: '0', step: '1', value: qty[i.id] || '', placeholder: 'จำนวน', 'aria-label': 'จำนวนให้ยืม' }); n.addEventListener('input', () => { qty[i.id] = n.value; if (+n.value > 0) { sel[i.id] = true; cb.checked = true; } });
+      list.append(h('div', { class: 'prow' }, cb, h('div', { class: 'thumb' }, i.image ? h('img', { src: i.image, alt: '' }) : i.name.slice(0, 2)), h('div', { class: 'inf' }, h('b', {}, i.name), h('small', {}, [i.code, i.size && 'ไซส์ ' + i.size, i.category].filter(Boolean).join(' · '))), n));
+    });
+  }
+  draw();
+  openDlg('ดึงชื่อ/รูปจากรายการ PPE', h('div', {}, h('p', { class: 'hint' }, 'คัดลอกเฉพาะชื่อ รหัส ไซส์ และรูป มาเป็นอุปกรณ์ให้ยืม — ไม่ตัดยอด Stock PPE · กรอก "จำนวน" ที่มีให้ยืม (แก้ทีหลังได้)'), qi, h('div', { style: 'height:10px' }), list),
+    [h('button', { class: 'btn sec', onclick: closeDlg }, 'ยกเลิก'), h('button', { class: 'btn', onclick: () => {
+      const ch = cand.filter(i => sel[i.id]); if (!ch.length) return toast('ยังไม่ได้เลือกรายการ');
+      ch.forEach(i => LS.litems.push({ id: uid(), loc, pref: i.id, name: i.name, code: i.code, category: i.category, unit: i.unit, size: i.size, sizeGroup: i.sizeGroup, image: '', total: Math.max(0, Math.floor(+qty[i.id] || 0)) }));
+      closeDlg(); lcommit(); toast('เพิ่ม ' + ch.length + ' รายการแล้ว');
+    } }, 'เพิ่มที่เลือก')]);
+}
+
 /* ============ boot ============ */
-load();
+load(); loadLoan();
+const pull0 = pull; pull = function (silent, ms) { loanPull(true, ms); return pull0(silent, ms); };
 (function () { const sm = /[#&]sync=([^&]*)/.exec(location.hash); if (sm) { try { const u = decodeURIComponent(sm[1]); if (/^https:\/\/script\.google\.com\//.test(u) && u !== cfg.syncUrl) { cfg.syncUrl = u; saveCfg(); } } catch (e) {} } })();
-(function () { const m = /#(kiosk|count)(?:=([^&]*))?/.exec(location.hash); if (m) { ui.kiosk = true; ui.kioskMode = m[1]; const id = m[2] ? decodeURIComponent(m[2]) : cfg.loc; if (locById(id)) cfg.loc = id; ui.page = m[1] === 'count' ? 'count' : 'req'; } })();
+(function () { const m = /#(kiosk|count|lend)(?:=([^&]*))?/.exec(location.hash); if (m) { ui.kiosk = true; ui.kioskMode = m[1]; const id = m[2] ? decodeURIComponent(m[2]) : cfg.loc; if (locById(id)) cfg.loc = id; ui.page = ({ count: 'count', lend: 'lend' })[m[1]] || 'req'; } })();
 if (!ui.kiosk) ui.page = 'req';
 render();
 $('#menu').addEventListener('click', () => { ui.navOpen = !ui.navOpen; renderRail(); });
