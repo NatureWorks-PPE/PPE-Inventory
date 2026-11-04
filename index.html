@@ -3174,7 +3174,7 @@ function donePage(msg, again, againLabel, extra) {
 function finishBtn(onDone) {
   const waiting = () => isKiosk() && !!cfg.syncUrl && pendingAny() > 0;
   const w = waiting(), err = ui.sync === 'err';
-  const fin = h('button', { class: 'btn big', disabled: w, onclick: () => { if (waiting()) { toast('ยังไม่ได้รับการยืนยันว่าข้อมูลถึงแอดมิน — รอให้ขึ้น ✓ ก่อน'); return; } onDone(); try { window.close(); } catch (e) { } } }, w ? (err ? 'ยังเสร็จสิ้นไม่ได้ — ข้อมูลยังไม่ถึงแอดมิน' : 'รอยืนยันว่าข้อมูลถึงแอดมิน…') : 'ยืนยัน: เสร็จสิ้น');
+  const fin = h('button', { class: 'btn big', disabled: w, onclick: () => { if (waiting()) { toast('ยังไม่ได้รับการยืนยันว่าข้อมูลถึงแอดมิน — รอให้ขึ้น ✓ ก่อน'); return; } onDone(); window.scrollTo(0, 0); } }, w ? (err ? 'ยังเสร็จสิ้นไม่ได้ — ข้อมูลยังไม่ถึงแอดมิน' : 'รอยืนยันว่าข้อมูลถึงแอดมิน…') : 'ยืนยัน: เสร็จสิ้น');
   return h('span', { style: 'display:contents' }, w && err ? h('button', { class: 'btn', onclick: () => { ui.sync = 'busy'; render(); push(); } }, 'ส่งข้อมูลอีกครั้ง') : null, fin);
 }
 function cautionBox() {
@@ -3858,12 +3858,13 @@ async function saveSlip(r) {
     c.toBlob(b => { if (!b) return toast('สร้างไฟล์ไม่ได้'); const a = h('a', { href: URL.createObjectURL(b), download: (r.no || 'slip') + '.png' }); document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); toast('ดาวน์โหลดแล้ว — ถ้าไม่ขึ้นไฟล์ ให้กดค้างที่รูปแล้วเลือกบันทึกรูป'); }, 'image/png');
   } catch (e) { toast('ดาวน์โหลดไม่ได้ — ใช้วิธีกดค้างที่รูปแล้วบันทึก'); }
 }
+function printSlip(r) { slipCanvas(r).then(c => printDoc(slipMeta(r).title + ' ' + (r.no || ''), '<style>@page{margin:10mm}body{padding:0}</style><img src="' + c.toDataURL('image/png') + '" style="width:100%;max-width:680px;display:block;margin:0 auto">')); }
 function slipBtn(r) { return h('button', { class: 'btn', onclick: () => saveSlip(r) }, r.kind === 'lend' ? '⬇ ดาวน์โหลดใบยืม' : '⬇ ดาวน์โหลดใบเบิก'); }
 function slipBox(r) {
   if (!r) return null;
   const im = h('div', { style: 'margin:12px auto 0;max-width:420px' }, h('p', { class: 'hint', style: 'margin:0' }, 'กำลังสร้างใบ…'));
   slipCanvas(r).then(c => { im.textContent = ''; im.append(h('img', { src: c.toDataURL('image/png'), alt: slipMeta(r).title + ' ' + (r.no || ''), style: 'width:100%;border:1px solid var(--line);border-radius:8px;background:#fff' }), h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'ถ้ากดดาวน์โหลดไม่ได้ (เช่น เปิดจาก LINE) ให้กดค้างที่รูปแล้วเลือก "บันทึกรูป" หรือแคปหน้าจอไว้')); }).catch(() => { im.textContent = ''; });
-  return h('div', {}, h('div', { class: 'bar', style: 'justify-content:center;margin-top:6px' }, slipBtn(r)), im);
+  return h('div', {}, h('div', { class: 'bar', style: 'justify-content:center;margin-top:6px' }, slipBtn(r), h('button', { class: 'btn sec', onclick: () => printSlip(r) }, '🖨 พิมพ์')), im);
 }
 const slipNo = (pre, d, ref) => pre + '-' + String(d || today()).replace(/-/g, '') + '-' + ref.slice(-4).toUpperCase();
 
@@ -3981,7 +3982,7 @@ PAGES.lend = function () {
     page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกการยืมแล้ว'), syncNote(), cautionBox(),
       h('p', { style: 'margin:4px 0 8px' }, r.no + ' · ' + r.name + ' · แผนก ' + r.dept + ' · ยืม ' + thDate(r.date) + ' · กำหนดคืน ' + (r.due ? thDate(r.due) : 'ไม่กำหนด')),
       h('ul', { style: 'margin:0 0 10px;padding-left:20px' }, r.lines.map(l => h('li', {}, l.name + ' × ' + qf(l.qty) + ' ' + l.unit))),
-      h('div', { class: 'bar' }, slipBtn(r), finishBtn(() => { B.last = B.receipt; B.receipt = null; B.finished = true; render(); }), h('button', { class: 'btn sec', onclick: () => { B.receipt = null; render(); } }, 'ยืมรายการถัดไป'))));
+      h('div', { class: 'bar' }, slipBtn(r), h('button', { class: 'btn sec', onclick: () => printSlip(r) }, '🖨 พิมพ์ใบยืม'), finishBtn(() => { B.last = B.receipt; B.receipt = null; B.finished = true; render(); }), h('button', { class: 'btn sec', onclick: () => { B.receipt = null; render(); } }, 'ยืมรายการถัดไป'))));
   }
   const items = litemsAt(loc);
   if (!items.length) { page.append(h('div', { class: 'empty' }, 'คลังนี้ยังไม่มีอุปกรณ์ให้ยืม', isKiosk() ? null : [' — ', h('button', { class: 'btn sm', onclick: () => go('litems') }, 'ไปเพิ่มอุปกรณ์ให้ยืม')])); return page; }
