@@ -3296,7 +3296,7 @@ PAGES.count = function () {
   const tb = h('tbody'), sum = h('span', { class: 'mut' });
   page.append(h('div', { class: 'card' }, h('div', { class: 'row c2' }, field('ค้นหา', qi), field('หมวดหมู่', cs)),
     h('div', { class: 'tw', style: 'max-height:62vh' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'รายการ'), h('th', { class: 'r' }, 'ในระบบ'), h('th', { class: 'r' }, 'นับได้จริง'), h('th', { class: 'r' }, 'ผลต่าง'))), tb)),
-    h('div', { class: 'bar', style: 'margin-top:12px' }, h('button', { class: 'btn', onclick: save }, 'บันทึกผลตรวจนับ'), h('button', { class: 'btn sec', onclick: () => { C.edits = {}; drawRows(); } }, 'ล้างที่กรอก'),
+    h('div', { class: 'bar', style: 'margin-top:12px' }, h('button', { class: 'btn', onclick: save }, 'บันทึกผลตรวจนับ'), h('button', { class: 'btn sec', onclick: () => { C.edits = {}; drawRows(); } }, 'ล้างที่กรอก'), pickBtn(loc),
       h('button', { class: 'btn sec', title: 'ใช้ตอนตั้งต้นสต็อก: ช่องที่ไม่ได้กรอกถือว่าไม่มีของเลย', onclick: () => { items.forEach(i => { if (C.edits[i.id] === undefined || C.edits[i.id] === '') C.edits[i.id] = '0'; }); drawRows(); } }, 'ช่องที่เหลือ = 0'), sum)));
   const filled = i => { const v = C.edits[i.id]; return !(v === undefined || v === '' || isNaN(+v)); };
   const diffOf = it => filled(it) ? +C.edits[it.id] - bal(it) : null;
@@ -3332,15 +3332,20 @@ PAGES.count = function () {
 
 
 /* ============ ตรวจนับ Stock ผ่านมือถือ (สแกน QR) — นับแบบไม่เห็นยอดในระบบ ============ */
+function pickNote(loc) {
+  const b = pickBtn(loc, 'btn'); if (!b) return null; const n = lowItems(loc).length;
+  return h('div', { class: 'note' + (n ? ' warn' : ''), style: 'margin:10px 0;text-align:left' }, h('div', { style: 'margin-bottom:8px' }, n ? h('b', {}, 'มี ' + n + ' รายการต่ำกว่า Min — พิมพ์ใบเติมของไปเบิกจาก ' + mainLoc().name + ' ได้เลย') : 'ทุกรายการยังสูงกว่า Min — ยังไม่ต้องเติมของ'), n ? b : null);
+}
 function countKiosk() {
   const loc = cfg.loc, C = ui.count = ui.count || { q: '', cat: '', edits: {}, done: null };
-  if (C.finished) return donePage('บันทึกผลตรวจนับเรียบร้อย ขอบคุณครับ', () => { C.finished = false; render(); }, 'ตรวจนับอีกรอบ');
+  if (C.finished) return donePage('บันทึกผลตรวจนับเรียบร้อย ขอบคุณครับ', () => { C.finished = false; render(); }, 'ตรวจนับอีกรอบ', pickNote(loc));
   const items = itemsAt(loc), page = h('div');
   page.append(pageHead('ตรวจนับ Stock', 'คลัง ' + locName(loc) + ' — นับของจริงแล้วกรอกจำนวน (ช่องที่ไม่กรอกจะไม่ถูกปรับยอด)'));
   if (C.done) {
     const d = C.done;
     page.append(h('div', { class: 'receipt' }, h('h2', {}, '✓ บันทึกผลตรวจนับแล้ว'), syncNote(), cautionBox(),
       h('p', { style: 'margin:4px 0 8px' }, d.by + ' · ' + thDate(d.date) + ' · นับ ' + d.n + ' รายการ'),
+      pickNote(loc),
       h('div', { class: 'bar' }, finishBtn(() => { C.done = null; C.finished = true; render(); }), h('button', { class: 'btn sec', onclick: () => { C.done = null; render(); } }, 'ตรวจนับรอบใหม่'))));
     return page;
   }
@@ -3441,25 +3446,64 @@ PAGES.issue = () => ioPage('out');
 
 /* ============ สั่งซื้อ / เติมของ ============ */
 function suggestQty(it) { const t = it.max > 0 ? it.max : it.min * 2; return Math.max(1, Math.ceil(t - bal(it))); }
+function pickRows(loc) {
+  const m = mainLoc();
+  return lowItems(loc).map(it => { const src = store.items.find(i => i.loc === m.id && groupKey(i) === groupKey(it)); const need = suggestQty(it), have = src ? bal(src) : 0; return { it, src, need, have, pick: src ? Math.min(need, Math.max(0, have)) : 0 }; });
+}
+function pickBtn(loc, cls) {
+  if (!loc || loc === mainLoc().id) return null;
+  const n = lowItems(loc).length;
+  return h('button', { class: cls || 'btn sec', onclick: () => n ? printPick([loc]) : toast('ทุกรายการยังสูงกว่า Min — ไม่ต้องเติมของ') }, '🖨 พิมพ์ใบเติมของ' + (n ? ' (' + n + ' รายการ)' : ''));
+}
+function printPick(locs) {
+  const m = mainLoc(), d = today(), now = new Date(), tm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+  const no = 'PK-' + d.replace(/-/g, '').slice(2) + '-' + tm.replace(':', '');
+  const pages = locs.map((loc, pi) => {
+    const rows = pickRows(loc).sort((a, b) => cmpTh(a.it.category || '', b.it.category || '') || cmpTh(a.it.code || '~', b.it.code || '~') || cmpTh(a.it.name, b.it.name));
+    const tot = rows.reduce((s, r) => s + r.pick, 0), short = rows.filter(r => r.pick < r.need).length;
+    return '<section class=pg><header><div><h1>ใบเติมของ / โอนสินค้า</h1><div class=route><b>จาก</b> ' + esc(m.name) + ' <span>→</span> <b>ไป</b> ' + esc(locName(loc)) + '</div></div>'
+      + '<table class=meta><tr><th>เลขที่</th><td>' + no + (locs.length > 1 ? '/' + (pi + 1) : '') + '</td></tr><tr><th>วันที่พิมพ์</th><td>' + thDate(d) + ' ' + tm + ' น.</td></tr><tr><th>ผู้จัดทำ</th><td>' + esc(cfg.user || '') + '</td></tr></table></header>'
+      + '<p class=sum>' + rows.length + ' รายการต่ำกว่า Min · ให้หยิบรวม <b>' + qf(tot) + '</b> หน่วย' + (short ? ' · <span class=w>⚠ ' + short + ' รายการคลังหลักมีไม่พอ</span>' : '') + '</p>'
+      + '<table class=lines><thead><tr><th class=c>✓</th><th class=c>#</th><th>รหัส</th><th>รายการ</th><th class=r>คงเหลือ<br>คลังย่อย</th><th class=r>Max</th><th class=r>ควรเติม</th><th class=r>คลังหลัก<br>มี</th><th class="r k">ให้หยิบ</th><th class=r>หยิบจริง</th><th>หมายเหตุ</th></tr></thead><tbody>'
+      + rows.map((r, i) => '<tr' + (r.pick < r.need ? ' class=sh' : '') + '><td class=c><i class=box></i></td><td class=c>' + (i + 1) + '</td><td class=code>' + esc(r.it.code || '') + '</td><td>' + esc(r.it.name) + '</td><td class=r>' + qf(bal(r.it)) + '</td><td class=r>' + qf(r.it.max) + '</td><td class=r>' + qf(r.need) + '</td><td class=r>' + (r.src ? qf(r.have) : '—') + '</td><td class="r k">' + (r.src ? qf(r.pick) + ' <small>' + esc(r.it.unit) + '</small>' : '—') + '</td><td class=blank></td><td class=note>' + (!r.src ? 'ไม่มีในคลังหลัก' : r.pick < r.need ? 'ขาด ' + qf(r.need - r.pick) : '') + '</td></tr>').join('')
+      + '</tbody></table>'
+      + '<p class=hint>หลังหยิบและส่งของครบแล้ว ให้บันทึกในแอปที่เมนู <b>โอนสินค้า</b> (หรือปุ่ม "สร้างใบโอน" ในหน้าเติมของ) ตามจำนวน "หยิบจริง" เพื่อให้ยอดคงเหลือถูกต้อง</p>'
+      + '<div class=sign>' + ['ผู้หยิบของ (' + esc(m.name.split(' ')[0]) + ')', 'ผู้รับของ (' + esc(locName(loc).split(' ')[0]) + ')'].map(x => '<div><span></span><b>' + x + '</b><small>วันที่ ......../......../........</small></div>').join('') + '</div></section>';
+  }).join('');
+  const css = '@page{size:A4;margin:12mm}*{box-sizing:border-box}body{margin:0;padding:0;font:13px Sarabun,"Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+    + '.pg{page-break-after:always;padding:4px}.pg:last-child{page-break-after:auto}header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:8px}'
+    + 'h1{font-size:22px;margin:0 0 4px}.route{font-size:15px}.route span{padding:0 6px}table.meta{border-collapse:collapse;font-size:12px;width:auto;margin:0;flex:none}.meta th,.meta td{border:0;text-align:left;white-space:nowrap}.meta th{padding:1px 10px 1px 0;font-weight:600;color:#444}.meta td{padding:1px 0;min-width:130px;border-bottom:1px dotted #999}'
+    + '.sum{margin:8px 0}.w{color:#b42318;font-weight:600}table.lines{border-collapse:collapse;width:100%}.lines th,.lines td{border:1px solid #888;padding:5px 6px;vertical-align:middle}.lines th{background:#eee;font-size:12px;text-align:left;line-height:1.2}'
+    + '.r{text-align:right!important}.c{text-align:center!important;width:28px}.k{font-weight:700;font-size:15px;background:#f5f5f5}.lines th.k{background:#ddd}.k small{font-weight:400;font-size:11px}.code{font-size:12px;color:#444;white-space:nowrap}'
+    + '.blank{width:70px}.note{width:90px;font-size:12px;color:#b42318}.sh td{}.box{display:inline-block;width:14px;height:14px;border:1.5px solid #111;border-radius:2px}tr{page-break-inside:avoid}'
+    + '.hint{font-size:12px;color:#444;margin:10px 0 0}.sign{display:grid;grid-template-columns:repeat(2,1fr);gap:60px;padding:0 40px;margin-top:40px;page-break-inside:avoid}.sign div{text-align:center;font-size:12px}.sign span{display:block;border-bottom:1px dotted #111;height:34px;margin-bottom:4px}.sign b{display:block;font-weight:600}.sign small{color:#555}';
+  printDoc('ใบเติมของ ' + no, '<style>' + css + '</style>' + pages);
+}
 const poTotal = po => po.lines.reduce((s, l) => s + l.qty * l.cost, 0);
 PAGES.order = function () {
   const loc = cfg.loc, m = mainLoc(), page = h('div'), low = lowItems(loc);
   if (loc !== m.id) {
     page.append(pageHead('เติมของ ' + locName(loc), 'คลังนี้เติมของด้วยการโอนจาก ' + m.name + ' — รายการที่ต่ำกว่า Min แสดงด้านล่าง'));
     if (!low.length) { page.append(h('div', { class: 'empty' }, 'ทุกรายการยังสูงกว่า Min — ไม่ต้องเติมของ')); return page; }
-    const rows = low.map(it => { const src = store.items.find(i => i.loc === m.id && groupKey(i) === groupKey(it)); return { it, src, need: suggestQty(it), have: src ? bal(src) : 0 }; });
+    const rows = pickRows(loc);
     page.append(h('div', { class: 'card' }, h('div', { class: 'bar', style: 'justify-content:space-between;margin-bottom:12px' }, h('h2', { style: 'margin:0' }, low.length + ' รายการต่ำกว่า Min'),
-      h('button', { class: 'btn', onclick: () => {
+      h('div', { class: 'bar' }, h('button', { class: 'btn sec', onclick: () => printPick([loc]) }, '🖨 พิมพ์ใบเติมของ'), h('button', { class: 'btn', onclick: () => {
         const lines = []; rows.forEach(r => { const q = Math.min(r.need, r.have); if (r.src && q > 0) lines.push({ it: r.src, qty: q, cost: r.src.cost }); });
         if (!lines.length) return toast('คลังหลักไม่มีของให้โอนเลย');
         ui.xfer = { from: m.id, to: loc, lines, note: 'เติมของที่ต่ำกว่า Min' }; go('xfer');
-      } }, 'สร้างใบโอนจาก ' + m.name.split(' ')[0] + ' →')),
+      } }, 'สร้างใบโอนจาก ' + m.name.split(' ')[0] + ' →'))),
       h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, ['รายการ', 'คงเหลือ', 'Min', 'Max', 'ควรเติม', 'ที่คลังหลักมี'].map((x, i) => h('th', { class: i ? 'r' : '' }, x)))),
         h('tbody', {}, rows.map(r => h('tr', {}, h('td', {}, r.it.name), h('td', { class: 'r' }, qf(bal(r.it))), h('td', { class: 'r' }, qf(r.it.min)), h('td', { class: 'r' }, qf(r.it.max)), h('td', { class: 'r num' }, qf(r.need)), h('td', { class: 'r' }, r.src ? qf(r.have) : h('span', { class: 'badge warn' }, 'ไม่มีในคลังหลัก')))))))));
     return page;
   }
   const O = ui.order = ui.order || { sel: {}, qty: {}, cost: {}, supplier: '', all: false };
+  const subs = store.locations.filter(l => l.id !== m.id).map(l => ({ l, n: lowItems(l.id).length }));
+  const pickCard = subs.length ? h('div', { class: 'card' }, h('div', { class: 'bar', style: 'justify-content:space-between;margin-bottom:8px' }, h('h2', { style: 'margin:0' }, 'ใบเติมของ / โอนสินค้า'),
+      h('button', { class: 'btn sec', onclick: () => { const ids = subs.filter(x => x.n).map(x => x.l.id); if (!ids.length) return toast('ทุกคลังย่อยยังสูงกว่า Min'); printPick(ids); } }, '🖨 พิมพ์ทุกคลังย่อย')),
+    h('p', { class: 'hint', style: 'margin:0 0 10px' }, 'พิมพ์ให้ทีมถือไปหยิบของที่ ' + m.name + ' — แยก 1 หน้าต่อ 1 คลังย่อย'),
+    h('div', { class: 'bar' }, subs.map(x => h('button', { class: 'btn sm sec', onclick: () => x.n ? printPick([x.l.id]) : toast(x.l.name + ' ยังสูงกว่า Min ทุกรายการ') }, '🖨 ' + x.l.name + ' (' + x.n + ')')))) : null;
   page.append(pageHead('สั่งซื้อ', 'รายการที่ต่ำกว่าจุดสั่งซื้อ (Min) ของคลัง ' + locName(loc)));
+  if (pickCard) page.append(pickCard);
   const pool = O.all ? itemsAt(loc) : low;
   const tb = h('tbody'), supp = h('input', { type: 'text', value: O.supplier, placeholder: 'ชื่อผู้ขาย / ซัพพลายเออร์' }); supp.addEventListener('input', () => O.supplier = supp.value);
   pool.forEach(it => {
