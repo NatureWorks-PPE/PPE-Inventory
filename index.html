@@ -2688,6 +2688,27 @@ const locName = id => id === '*' ? 'ทุกคลังรวมกัน' : (
 const itemById = id => store.items.find(i => i.id === id);
 const itemsAt = loc => store.items.filter(i => loc === '*' || i.loc === loc).sort((a, b) => cmpTh(a.code || '~', b.code || '~') || cmpTh(a.name, b.name));
 const groupKey = it => it.link || it.id;
+/* size groups: same product in several sizes shows as one row with a size dropdown.
+   Match ignores case/extra spaces, and items transferred from another store follow their source item's group,
+   so "Tyvek Suit" (from Canteen) and "Tyvek suit (สีขาว)" (Lobby) end up in one row. */
+const normSG = g => String(g || '').trim().toLowerCase().replace(/\s+/g, ' ');
+function sizeKey(it) {
+  if (!it.sizeGroup) return '';
+  const r = it.link && itemById(it.link);
+  return normSG((r && r.sizeGroup) || it.sizeGroup);
+}
+function sizeLabel(g) {
+  const c = {}; g.forEach(i => { if (i.sizeGroup) c[i.sizeGroup] = (c[i.sizeGroup] || 0) + 1; });
+  return Object.keys(c).sort((a, b) => c[b] - c[a])[0] || g[0].sizeGroup;
+}
+const SIZE_ORDER = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', 'XXXL', '3XL', '4XL', '5XL'];
+function cmpSize(a, b) {
+  const A = String(a || '').trim().toUpperCase(), B = String(b || '').trim().toUpperCase();
+  const ia = SIZE_ORDER.indexOf(A), ib = SIZE_ORDER.indexOf(B);
+  if (ia >= 0 && ib >= 0) return ia - ib;
+  if (ia >= 0 !== ib >= 0) return ia >= 0 ? -1 : 1;
+  return A.localeCompare(B, 'th', { numeric: true });
+}
 const deptByName = n => store.departments.find(d => d.name === n);
 const isOther = n => /other|อื่นๆ/i.test(n || '');
 const cmpDept = (a, b) => (isOther(a) - isOther(b)) || String(a).localeCompare(String(b), 'th', { numeric: true });
@@ -2707,6 +2728,9 @@ function counterpart(it, toLoc) {
   let c = store.items.find(i => i.loc === toLoc && i.id !== it.id && groupKey(i) === k);
   if (!c) {
     c = Object.assign({}, it, { id: uid(), loc: toLoc, link: k, min: 0, max: 0 });
+    /* join the size group the destination store already uses for this product (e.g. Lobby's "Tyvek suit (สีขาว)") */
+    const sk = sizeKey(it), sib = sk && store.items.find(i => i.loc === toLoc && i.sizeGroup && sizeKey(i) === sk);
+    if (sib) c.sizeGroup = sib.sizeGroup;
     if (!it.link) { /* item born in this store: source becomes the root of the group */ }
     store.items.push(c);
   }
@@ -2952,9 +2976,10 @@ function picker(o) {
     if (!pool.length) { list.append(h('div', { class: 'empty' }, o.items.length ? 'ไม่พบรายการที่ค้นหา' : (o.emptyText || 'ยังไม่มีรายการ'))); return; }
     const wrap = h('div', { class: 'plist' }); list.append(wrap);
     const groups = [], seen = {};
-    pool.forEach(it => { if (it.sizeGroup) { if (!seen[it.sizeGroup]) { seen[it.sizeGroup] = []; groups.push(seen[it.sizeGroup]); } seen[it.sizeGroup].push(it); } else groups.push([it]); });
+    pool.forEach(it => { const k = sizeKey(it); if (k) { if (!seen[k]) { seen[k] = []; groups.push(seen[k]); } seen[k].push(it); } else groups.push([it]); });
     groups.forEach(g => {
-      const grp = g[0].sizeGroup;
+      g.sort((a, b) => cmpSize(a.size, b.size));
+      const grp = g.length ? sizeLabel(g) : '';
       let cur = grp ? (g.find(i => i.id === sel[grp]) || g[0]) : g[0];
       if (grp) sel[grp] = cur.id;
       const qn = h('input', { type: 'number', min: '1', step: '1', value: '1', 'aria-label': 'จำนวน' });
@@ -3652,6 +3677,7 @@ PAGES.items = function () {
   const loc = cfg.loc, m = mainLoc(), P = ui.itm = ui.itm || { q: '', cat: '' }, page = h('div'), all = itemsAt(loc);
   page.append(pageHead('รายการ PPE (Min / Max) — ' + locName(loc), 'ข้อมูลหลักของคลังนี้: ชื่อ หมวด ราคา และจุด Min/Max — ยอดคงเหลืออยู่ที่เมนู ยอดคงเหลือ, การเบิกอยู่ที่ เบิก-จ่าย',
     loc !== m.id ? h('button', { class: 'btn sec', onclick: () => importFromMain() }, '+ เพิ่มจาก ' + m.name.split(' ')[0]) : null,
+    store.locations.length > 1 ? h('button', { class: 'btn sec', onclick: () => syncNamesDlg() }, '⇄ ชื่อ/หน่วยให้ตรงกันทุกคลัง' + (nameDiffs().length ? ' (' + nameDiffs().length + ')' : '')) : null,
     h('button', { class: 'btn', onclick: () => openItemForm(null) }, '+ เพิ่มรายการใหม่')));
   const qi = h('input', { type: 'search', placeholder: 'ค้นหาชื่อ / รหัส', value: P.q }), tb = h('tbody'), cnt = h('span', { class: 'mut' });
   qi.addEventListener('input', () => { P.q = qi.value; draw(); });
@@ -3686,6 +3712,53 @@ function importFromMain() {
       ids.forEach(id => counterpart(itemById(id), loc)); closeDlg(); commit(); toast('เพิ่ม ' + ids.length + ' รายการแล้ว');
     } }, 'เพิ่มที่เลือก')]);
 }
+/* ===== same product in every store: shared name / code / category / unit / size (Min, Max, cost, image stay per store) ===== */
+const SHARED_FIELDS = ['name', 'code', 'category', 'unit', 'size', 'sizeGroup'];
+const siblings = it => store.items.filter(i => i !== it && groupKey(i) === groupKey(it));
+/* copy shared fields from src to the same product in other stores; a renamed size group is renamed for all its sizes too, so M / L / XL stay together */
+function applyShared(src, targets) {
+  const ren = {};
+  targets.forEach(i => { if (i === src) return; if (i.sizeGroup && src.sizeGroup && normSG(i.sizeGroup) !== normSG(src.sizeGroup)) ren[normSG(i.sizeGroup)] = src.sizeGroup; SHARED_FIELDS.forEach(f => i[f] = src[f]); });
+  return ren;
+}
+function renameGroups(ren) { if (Object.keys(ren).length) store.items.forEach(i => { const n = ren[normSG(i.sizeGroup)]; if (i.sizeGroup && n) i.sizeGroup = n; }); }
+function nameDiffs() {
+  const g = {}; store.items.forEach(i => (g[groupKey(i)] = g[groupKey(i)] || []).push(i));
+  return Object.values(g).filter(a => a.length > 1 && a.some(i => SHARED_FIELDS.some(k => String(i[k] || '').trim() !== String(a[0][k] || '').trim())));
+}
+function syncNamesDlg() {
+  const main = mainLoc().id, groups = nameDiffs(), pick = {}, on = {};
+  const locOrder = l => store.locations.findIndex(x => x.id === l);
+  groups.forEach(a => { a.sort((x, y) => (x.loc !== main) - (y.loc !== main) || locOrder(x.loc) - locOrder(y.loc)); const k = groupKey(a[0]); pick[k] = a[0].id; on[k] = true; });
+  const list = h('div');
+  const show = it => h('div', {}, h('b', {}, it.name), h('div', { class: 'mut', style: 'font-size:12px' }, ['หน่วย ' + it.unit, it.code, it.size && 'ไซส์ ' + it.size, it.sizeGroup && 'กลุ่ม ' + it.sizeGroup].filter(Boolean).join(' · ')));
+  function draw() {
+    list.textContent = '';
+    if (!groups.length) { list.append(h('div', { class: 'empty' }, 'ชื่อและหน่วยตรงกันทุกคลังแล้ว')); return; }
+    groups.forEach(a => {
+      const k = groupKey(a[0]), cb = h('input', { type: 'checkbox', checked: on[k] });
+      cb.addEventListener('change', () => on[k] = cb.checked);
+      list.append(h('div', { class: 'card', style: 'padding:10px 12px;margin-bottom:8px' },
+        h('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer;margin-bottom:6px' }, cb, h('span', { class: 'mut', style: 'font-size:12px' }, 'ปรับรายการนี้ — เลือกชื่อที่จะใช้')),
+        a.map(it => { const r = h('input', { type: 'radio', name: 'sn_' + k, checked: pick[k] === it.id, style: 'width:18px;height:18px;flex:none;margin:4px 0 0;padding:0;box-shadow:none' }); r.addEventListener('change', () => pick[k] = it.id);
+          return h('label', { style: 'display:flex;gap:10px;align-items:flex-start;cursor:pointer;padding:4px 0' }, r, h('span', { class: 'chip', style: 'flex:none' }, locName(it.loc).split(' ')[0]), show(it)); })));
+    });
+  }
+  const useAll = loc => { groups.forEach(a => { const x = a.find(i => i.loc === loc); if (x) pick[groupKey(a[0])] = x.id; }); draw(); };
+  const body = h('div', {},
+    h('p', { class: 'hint' }, 'รายการเดียวกันที่อยู่หลายคลัง (เชื่อมกันตอนโอน) แต่ชื่อ/หน่วย/ไซส์ไม่ตรงกัน — เลือกแบบที่ต้องการ แล้วกดบันทึก ทุกคลังจะใช้ชื่อ รหัส หมวด หน่วย และไซส์เดียวกัน (Min/Max ราคา รูป และยอดคงเหลือไม่เปลี่ยน)'),
+    h('p', { class: 'hint', style: 'color:#b45309' }, 'ระวังเรื่องหน่วย: ระบบไม่แปลงจำนวน ถ้าคลังหนึ่งนับเป็น "กล่อง" อีกคลังนับเป็น "ชิ้น" จริง ๆ ให้ไม่ติ๊กรายการนั้น'),
+    groups.length ? h('div', { class: 'bar', style: 'margin-bottom:10px' }, store.locations.map(l => h('button', { class: 'btn sm sec', onclick: () => useAll(l.id) }, 'ใช้ของ ' + l.name.split(' ')[0] + ' ทั้งหมด'))) : null,
+    list);
+  draw();
+  openDlg('ชื่อ/หน่วยให้ตรงกันทุกคลัง (' + groups.length + ' รายการ)', body, [h('button', { class: 'btn sec', onclick: closeDlg }, 'ปิด'),
+    groups.length ? h('button', { class: 'btn', onclick: () => {
+      let n = 0; const ren = {};
+      groups.forEach(a => { const k = groupKey(a[0]); if (!on[k]) return; const src = a.find(i => i.id === pick[k]); Object.assign(ren, applyShared(src, a)); n += a.length - 1; });
+      renameGroups(ren);
+      closeDlg(); commit(); toast('ปรับแล้ว ' + n + ' รายการ');
+    } }, 'บันทึก') : null]);
+}
 function openItemForm(id) {
   const ed = id ? itemById(id) : null, loc = ed ? ed.loc : cfg.loc, m = mainLoc();
   const f = ed ? Object.assign({}, ed) : { name: '', code: '', category: 'ป้องกันอื่นๆ', unit: 'ชิ้น', cost: 0, min: 0, max: 0, sizeGroup: '', size: '', image: '', link: '' };
@@ -3693,6 +3766,7 @@ function openItemForm(id) {
   const im = h('div', { class: 'thumb', style: 'width:96px;height:96px' });
   function drawIm() { im.textContent = ''; if (f.image) im.append(h('img', { src: f.image, alt: '' })); else im.append('ไม่มีรูป'); }
   drawIm(); const open0 = h('input', { type: 'number', min: '0', step: '1', value: 0 });
+  const syncCb = ed && siblings(ed).length ? h('input', { type: 'checkbox', checked: true }) : null;
   const linkSel = (loc !== m.id) ? selectEl([['', '— ไม่เชื่อม —']].concat(itemsAt(m.id).map(i => [i.id, i.name])), f.link || '', v => f.link = v) : null;
   const body = h('div', {},
     h('div', { class: 'bar', style: 'flex-wrap:nowrap;margin-bottom:12px' }, im, h('div', { class: 'bar' }, h('button', { class: 'btn sec', onclick: () => pickImage(d => { f.image = d; drawIm(); }) }, 'เลือกรูป'), h('button', { class: 'btn sec', onclick: () => { f.image = ''; drawIm(); } }, 'เอารูปออก'))),
@@ -3702,7 +3776,8 @@ function openItemForm(id) {
     h('div', { class: 'row' }, field('กลุ่มไซส์ (ถ้ามีหลายไซส์)', I('sizeGroup', { placeholder: 'เช่น Nitrile glove' })), field('ไซส์ของรายการนี้', I('size', { placeholder: 'S / M / L / เบอร์ 8' }))),
     h('p', { class: 'hint' }, 'รายการหลายไซส์ใส่ "กลุ่มไซส์" เป็นชื่อเดียวกัน หน้าเบิกจะรวมเป็นแถวเดียวพร้อมช่องเลือกไซส์'),
     linkSel ? h('div', { class: 'row' }, field('เชื่อมกับรายการของ ' + m.name.split(' ')[0] + ' (ใช้ตอนโอน)', linkSel)) : null,
-    ed ? null : h('div', { class: 'row' }, field('ยอดคงเหลือเริ่มต้น (ถ้ามีของอยู่แล้ว)', open0)));
+    ed ? null : h('div', { class: 'row' }, field('ยอดคงเหลือเริ่มต้น (ถ้ามีของอยู่แล้ว)', open0)),
+    syncCb ? h('label', { class: 'hint', style: 'display:flex;gap:8px;align-items:center;cursor:pointer' }, syncCb, 'ใช้ชื่อ รหัส หมวด หน่วย และไซส์นี้กับรายการเดียวกันในคลังอื่นด้วย (' + siblings(ed).map(o => locName(o.loc)).join(', ') + ')') : null);
   const foot = [];
   if (ed) foot.push(h('button', { class: 'btn danger', style: 'margin-right:auto', onclick: () => {
     if (!confirm('ลบ "' + ed.name + '" และประวัติความเคลื่อนไหวของรายการนี้ทั้งหมด?')) return;
@@ -3711,7 +3786,7 @@ function openItemForm(id) {
   foot.push(h('button', { class: 'btn sec', onclick: closeDlg }, 'ยกเลิก'), h('button', { class: 'btn', onclick: () => {
     if (!f.name.trim()) return toast('กรอกชื่อ PPE ก่อน');
     f.name = f.name.trim(); f.sizeGroup = f.sizeGroup.trim(); f.size = f.size.trim();
-    if (ed) Object.assign(ed, f);
+    if (ed) { Object.assign(ed, f); if (syncCb && syncCb.checked) renameGroups(applyShared(ed, siblings(ed))); }
     else { const it = Object.assign({ id: uid(), loc }, f); store.items.push(it); const o = +open0.value; if (o > 0) addMove({ item: it.id, loc, type: 'in', kind: 'open', qty: o, cost: it.cost, party: 'ยอดยกมา', note: 'ยอดคงเหลือเริ่มต้น' }); }
     closeDlg(); commit(); toast(ed ? 'บันทึกแล้ว' : 'เพิ่มรายการแล้ว');
   } }, ed ? 'บันทึก' : 'เพิ่มรายการ'));
