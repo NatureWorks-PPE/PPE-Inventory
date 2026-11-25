@@ -214,6 +214,26 @@ dialog::backdrop{background:rgba(8,16,22,.55)}
 .kbar{background:var(--loc);color:#0F2430;font:700 17px var(--f-head);padding:10px 16px;margin:-6px -6px 14px;border-radius:0 0 12px 12px;display:flex;align-items:center;gap:8px}
 .who button{background:transparent;color:#cfe3e3;border:1px solid #3d5a63;margin-top:6px}.who button:hover{background:#1c3a44}
 .caution{margin:10px 0;padding:10px 12px;border:2px solid #d98a00;background:#fff4d6;border-radius:10px;display:flex;flex-direction:column;gap:2px;font-size:15px;color:#5a3b00}.caution b{font-size:16px}.caution.ok{border-color:#2f7d5b;background:#e3f4ea;color:#14532d}.btn:disabled{opacity:.55;cursor:not-allowed}
+.mbadge{display:inline-block;border-radius:99px;padding:2px 10px;font-size:12.5px;font-weight:700;white-space:nowrap}
+.mbadge.big{font-size:15px;padding:4px 14px}
+.mlist{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.mrow{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.mready{flex-basis:100%;color:var(--ok);font-weight:700}
+.msteps{display:flex;gap:4px;margin:14px 0}
+.mstep{flex:1;text-align:center;position:relative;color:var(--ink2);font-size:13px}
+.mstep i{display:block;height:6px;border-radius:3px;background:var(--line);margin-bottom:4px}
+.mstep.on i{background:var(--ok)}.mstep.on b{color:var(--ink)}
+.mstep small{display:block;font-size:11px;min-height:15px}
+tr.mshort td{background:var(--warn-soft)}
+td.mwarn{color:var(--warn);font-weight:700}
+.mcols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:900px){.mcols{grid-template-columns:1fr}}
+.mcol{background:var(--panel);border-radius:var(--r);border-top:6px solid var(--mc);padding:10px;box-shadow:var(--sh)}
+.mcol h2{font-size:18px;color:var(--mc);margin:2px 4px 10px;display:flex;justify-content:space-between}
+.mcol h2 span{background:var(--mbg);border-radius:99px;padding:0 10px;font-size:15px}
+.mtile{background:var(--mbg);color:#14212B;border-radius:8px;padding:8px 10px;margin-bottom:8px}
+.mtile .no{font:700 16px var(--f-head)}.mtile .dp{font-weight:600}.mtile .nm,.mtile .tm{font-size:13px;color:#3b4a57}
+.mboard .mcol:first-child .mtile{border:2px solid var(--mc)}
 </style>
 </head>
 <body>
@@ -2784,7 +2804,7 @@ function usageIn(month, loc) { return store.moves.filter(m => isUse(m) && (loc =
 let pushT = null, pushing = false;
 const pendingMoves = () => store.moves.filter(m => m.q);
 const pendingCounts = () => store.counts.filter(c => c.q);
-const pendingAny = () => pendingMoves().length + pendingCounts().length + loanPending().length;
+const pendingAny = () => pendingMoves().length + pendingCounts().length + loanPending().length + (typeof mreqPending === 'function' ? mreqPending().length : 0);
 /* kiosk (พนักงานเบิก) ส่งเฉพาะรายการเบิกใหม่ (append) ส่วนแอดมินส่งข้อมูลทั้งชุด — เซิร์ฟเวอร์รวมรายการเบิกให้ ไม่เขียนทับกัน */
 function push() {
   if (!cfg.syncUrl) return;
@@ -2859,10 +2879,13 @@ const APPS_SCRIPT = `// วางใน Code.gs แล้ว Deploy > New deploy
 // รวมรายการเบิกจากหลายเครื่องโดยไม่เขียนทับกัน + แอดมินเข้าสู่ระบบด้วยรหัสผ่าน
 // ตั้งรหัสผ่านที่: ตั้งค่าโปรเจ็กต์ (รูปเฟือง) > Script Properties > เพิ่ม ADMIN_PASSWORD
 // ระบบยืม-คืนอุปกรณ์ เก็บแยกไฟล์ ppe-loan-data.json ไม่ยุ่งกับข้อมูลเบิก-จ่าย PPE เดิม
+// ใบเบิก PPE ประจำเดือน (คลังหลัก) เก็บแยกไฟล์ ppe-mreq-data.json
 const NAME = 'ppe-store-data.json';
 const LOAN_NAME = 'ppe-loan-data.json';
+const MREQ_NAME = 'ppe-mreq-data.json';
 const SESSION_DAYS = 30;
 const MAX_FAILS = 5;
+function mf_() { const it = DriveApp.getFilesByName(MREQ_NAME); return it.hasNext() ? it.next() : DriveApp.createFile(MREQ_NAME, '{}'); }
 function lf_() { const it = DriveApp.getFilesByName(LOAN_NAME); return it.hasNext() ? it.next() : DriveApp.createFile(LOAN_NAME, '{}'); }
 function f_() { const it = DriveApp.getFilesByName(NAME); return it.hasNext() ? it.next() : DriveApp.createFile(NAME, '{}'); }
 function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
@@ -2888,6 +2911,10 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.p === 'loan') {
     let d = {}; try { d = JSON.parse(lf_().getBlob().getDataAsString() || '{}'); } catch (x) { d = {}; }
     d.kind = 'loan'; return out_(d);
+  }
+  if (e && e.parameter && e.parameter.p === 'mreq') {
+    let d = {}; try { d = JSON.parse(mf_().getBlob().getDataAsString() || '{}'); } catch (x) { d = {}; }
+    d.kind = 'mreq'; return out_(d);
   }
   return ContentService.createTextOutput(f_().getBlob().getDataAsString() || '{}').setMimeType(ContentService.MimeType.JSON);
 }
@@ -2916,6 +2943,7 @@ function doPost(e) {
   const b = JSON.parse(e.postData.contents);
   if (['login', 'whoami', 'logout', 'setpw'].indexOf(b.mode) >= 0) return acct_(b);
   if (b.mode === 'loan_append' || b.mode === 'loan_full') return loan_(b);
+  if (b.mode === 'mreq_append' || b.mode === 'mreq_put') return mreq_(b);
   if (b.mode !== 'append' && !auth_(b.token)) return out_({ ok: false, error: 'auth' });
   const lock = LockService.getScriptLock(); lock.waitLock(25000);
   try {
@@ -2975,6 +3003,48 @@ function loan_(b) {
     }
     f.setContent(JSON.stringify(cur));
     return out_({ ok: true, added: added, rev: cur.rev || 0 });
+  } finally { lock.releaseLock(); }
+}
+/* ---------- ใบเบิก PPE ประจำเดือน (ไฟล์แยก) ---------- */
+function mreq_(b) {
+  const admin = auth_(b.token);
+  if (b.mode === 'mreq_put' && !admin) return out_({ ok: false, error: 'auth' });
+  const lock = LockService.getScriptLock(); lock.waitLock(25000);
+  try {
+    const f = mf_(); let cur = {};
+    try { cur = JSON.parse(f.getBlob().getDataAsString() || '{}'); } catch (x) { cur = {}; }
+    cur.reqs = cur.reqs || []; cur.del = cur.del || []; cur.cfg = cur.cfg || { from: 1, to: 31 };
+    delete cur.kind;
+    const dl = {}; cur.del.forEach(x => dl[x] = 1);
+    if (admin) (b.del || []).forEach(x => { if (!dl[x]) { dl[x] = 1; cur.del.push(x); } });
+    cur.reqs = cur.reqs.filter(r => !dl[r.id]);
+    const idx = {}; cur.reqs.forEach((r, i) => idx[r.id] = i);
+    const nextNo = d => {
+      const p = 'MR-' + String(d || '').replace(/-/g, '').slice(2, 6) + '-'; let n = 0;
+      cur.reqs.forEach(r => { if (r.no && r.no.indexOf(p) === 0) n = Math.max(n, parseInt(r.no.slice(p.length), 10) || 0); });
+      return p + ('00' + (n + 1)).slice(-3);
+    };
+    const nos = {}; let added = 0;
+    (b.reqs || []).forEach(r => {
+      if (!r || !r.id || dl[r.id]) return; delete r.q;
+      if (idx[r.id] == null) {
+        /* พนักงาน (ไม่ได้เข้าสู่ระบบ) ส่งได้เฉพาะใบเบิกใหม่ สถานะ "ส่งแล้ว" */
+        if (!admin) {
+          r.status = 'sent'; r.hist = [{ s: 'sent', at: Date.now(), by: String(r.name || '') }];
+          r.lines = (r.lines || []).map(l => ({ item: l.item, code: l.code || '', name: l.name, unit: l.unit, qty: Number(l.qty) || 0 }));
+        }
+        if (!r.no) r.no = nextNo(r.date);
+        idx[r.id] = cur.reqs.length; cur.reqs.push(r); added++;
+      } else if (admin) {
+        const o = cur.reqs[idx[r.id]]; if (!r.no) r.no = o.no;
+        cur.reqs[idx[r.id]] = r; added++;
+      }
+      nos[r.id] = cur.reqs[idx[r.id]].no;
+    });
+    if (admin && b.cfg) cur.cfg = b.cfg;
+    if (added || admin) cur.rev = Date.now();
+    f.setContent(JSON.stringify(cur));
+    return out_({ ok: true, added: added, nos: nos, rev: cur.rev || 0 });
   } finally { lock.releaseLock(); }
 }`;
 
@@ -3046,7 +3116,7 @@ function picker(o) {
 /* ============ shell ============ */
 const PAGES = {};
 const NAV = [
-  ['เบิก - จ่าย', [['req', 'เบิก PPE', '✎'], ['log', 'ประวัติเบิก-จ่าย', '▤'], ['issue', 'จ่ายออก (แอดมิน)', '⇡']]],
+  ['เบิก - จ่าย', [['req', 'เบิก PPE', '✎'], ['mreq', 'ใบเบิกประจำเดือน', '🛒'], ['log', 'ประวัติเบิก-จ่าย', '▤'], ['issue', 'จ่ายออก (แอดมิน)', '⇡']]],
   ['ยืม - คืน อุปกรณ์', [['lend', 'ยืมอุปกรณ์', '⇆'], ['lret', 'รับคืน / ค้างคืน', '↩'], ['llog', 'ประวัติยืม-คืน', '▤'], ['litems', 'อุปกรณ์ให้ยืม', '☰']]],
   ['Stock คงเหลือ', [['stock', 'ยอดคงเหลือ', '▦'], ['count', 'ตรวจนับ Stock', '☑'], ['receive', 'รับเข้า', '⇣'], ['xfer', 'โอนสินค้า', '⇄'], ['order', 'สั่งซื้อ / เติมของ', '◍']]],
   ['ข้อมูลหลัก', [['items', 'รายการ PPE (Min / Max)', '☰'], ['report', 'รายงาน', '▥'], ['settings', 'ตั้งค่า', '⚙']]]
@@ -3054,6 +3124,7 @@ const NAV = [
 function go(p) { ui.page = p; ui.navOpen = false; render(); window.scrollTo(0, 0); }
 function setLoc(id) { cfg.loc = id; saveCfg(); ui.req = null; ui.xfer = null; ui.io = null; ui.count = null; render(); }
 const isKiosk = () => ui.kiosk === true;
+const KMODE = { count: 'count', lend: 'lend', order: 'mnew', board: 'mboard' };
 function renderRail() {
   const r = $('#rail'); r.className = 'rail' + (ui.navOpen ? ' open' : ''); r.textContent = '';
   const sc = $('.scrim'); if (sc) sc.remove();
@@ -3066,7 +3137,7 @@ function renderRail() {
   NAV.forEach(([g, items]) => {
     nav.append(h('h4', {}, g));
     items.forEach(([id, label, ic]) => nav.append(h('button', { 'aria-current': ui.page === id ? 'page' : null, onclick: () => go(id) },
-      h('span', { class: 'ic' }, ic), label, id === 'order' && low ? h('span', { class: 'cnt' }, low) : null, id === 'count' && countStatus(cfg.loc).due ? h('span', { class: 'cnt' }, '!') : null, id === 'lret' && lod ? h('span', { class: 'cnt' }, lod) : null)));
+      h('span', { class: 'ic' }, ic), label, id === 'order' && low ? h('span', { class: 'cnt' }, low) : null, id === 'count' && countStatus(cfg.loc).due ? h('span', { class: 'cnt' }, '!') : null, id === 'lret' && lod ? h('span', { class: 'cnt' }, lod) : null, id === 'mreq' && MS && MS.reqs.some(r => r.status === 'sent') ? h('span', { class: 'cnt' }, MS.reqs.filter(r => r.status === 'sent').length) : null)));
   });
   r.append(nav);
   const nm = h('input', { type: 'text', value: cfg.user || '', placeholder: 'ชื่อผู้ใช้งาน (แอดมิน)', 'aria-label': 'ชื่อผู้ใช้งาน' });
@@ -3111,9 +3182,9 @@ function loginPage() {
 function render() {
   const y = window.scrollY;
   const l = locById(cfg.loc); document.documentElement.style.setProperty('--loc', l ? l.color : '#1FA6A0');
-  const lg = needLogin(); document.body.classList.toggle('kiosk', isKiosk() || lg); if (isKiosk()) ui.page = ({ count: 'count', lend: 'lend' })[ui.kioskMode] || 'req';
+  const lg = needLogin(); document.body.classList.toggle('kiosk', isKiosk() || lg); if (isKiosk()) ui.page = KMODE[ui.kioskMode] || 'req';
   renderRail();
-  const v = $('#view'); v.textContent = ''; if (isKiosk()) v.append(h('div', { class: 'kbar' }, '● ' + locName(cfg.loc))); v.append(lg ? loginPage() : PAGES[ui.page]());
+  const v = $('#view'); v.textContent = ''; if (isKiosk()) v.append(h('div', { class: 'kbar' }, '● ' + locName(cfg.loc) + (ui.kioskMode === 'order' ? ' · ใบเบิกประจำเดือน' : ui.kioskMode === 'board' ? ' · บอร์ดสถานะ' : ''))); v.append(lg ? loginPage() : PAGES[ui.page]());
   window.scrollTo(0, y);
 }
 function printDoc(title, body) {
@@ -4007,7 +4078,7 @@ PAGES.settings = function () {
     const nm = h('input', { type: 'text', value: l.name }); nm.addEventListener('change', () => { l.name = nm.value.trim() || l.name; commit(); });
     const col = selectEl(LOC_COLORS.map((c, i) => [c, 'สี ' + (i + 1)]), l.color, v => { l.color = v; commit(); }, { 'aria-label': 'สีของคลัง', style: 'border-left:10px solid ' + l.color });
     lt.append(h('tr', {}, h('td', {}, nm), h('td', {}, col), h('td', {}, l.main ? h('span', { class: 'badge ok' }, 'คลังหลัก') : h('button', { class: 'btn sm sec', onclick: () => { store.locations.forEach(x => x.main = x.id === l.id); commit(); } }, 'ตั้งเป็นหลัก')),
-      h('td', {}, cdIn(l)), h('td', {}, h('div', { class: 'bar' }, h('button', { class: 'btn sm sec', onclick: () => kioskLink(l) }, 'QR เบิก PPE'), h('button', { class: 'btn sm sec', onclick: () => kioskLink(l, 'count') }, 'QR ตรวจนับ'), h('button', { class: 'btn sm sec', onclick: () => kioskLink(l, 'lend') }, 'QR ยืมอุปกรณ์'))), h('td', {}, h('span', { class: 'mut' }, itemsAt(l.id).length + ' รายการ')), h('td', { class: 'r' }, h('button', { class: 'btn sm danger', onclick: () => {
+      h('td', {}, cdIn(l)), h('td', {}, h('div', { class: 'bar' }, h('button', { class: 'btn sm sec', onclick: () => kioskLink(l) }, 'QR เบิก PPE'), h('button', { class: 'btn sm sec', onclick: () => kioskLink(l, 'count') }, 'QR ตรวจนับ'), h('button', { class: 'btn sm sec', onclick: () => kioskLink(l, 'lend') }, 'QR ยืมอุปกรณ์'), l.main ? h('button', { class: 'btn sm sec', onclick: () => mLink('order') }, 'QR ใบเบิกประจำเดือน') : null, l.main ? h('button', { class: 'btn sm sec', onclick: () => mLink('board') }, 'QR บอร์ดสถานะ') : null)), h('td', {}, h('span', { class: 'mut' }, itemsAt(l.id).length + ' รายการ')), h('td', { class: 'r' }, h('button', { class: 'btn sm danger', onclick: () => {
         if (store.locations.length <= 1) return toast('ต้องมีอย่างน้อย 1 คลัง'); if (l.main) return toast('ลบคลังหลักไม่ได้ — ตั้งคลังอื่นเป็นหลักก่อน');
         if (itemsAt(l.id).length) return toast('คลังนี้ยังมีรายการ PPE อยู่ ลบไม่ได้'); if (!confirm('ลบคลัง ' + l.name + '?')) return;
         store.locations = store.locations.filter(x => x.id !== l.id); if (cfg.loc === l.id) { cfg.loc = mainLoc().id; saveCfg(); } commit();
@@ -4422,17 +4493,335 @@ function importLoanFromPpe() {
     } }, 'เพิ่มที่เลือก')]);
 }
 
+/* ============ ใบเบิก PPE ประจำเดือน (เฉพาะคลังหลัก Canteen) — ไฟล์แยก ppe-mreq-data.json ============ */
+const MKEY = 'ppe_v2_mreq', MMINE = 'ppe_v2_mreq_mine';
+let MS = null;
+const MST = {
+  sent: { t: 'ส่งแล้ว / รอจัด', s: 'รอจัด', c: '#6B7C8A', bg: '#EEF1F4' },
+  prep: { t: 'กำลังจัดของ', s: 'กำลังจัด', c: '#B26A00', bg: '#FFF1D6' },
+  ready: { t: 'พร้อมให้รับ', s: 'พร้อมรับ', c: '#17744A', bg: '#DCF1E5' },
+  done: { t: 'รับแล้ว', s: 'รับแล้ว', c: '#0E5A63', bg: '#DAEDEF' },
+  cancel: { t: 'ยกเลิก', s: 'ยกเลิก', c: '#C23B06', bg: '#FCE8DB' }
+};
+const MFLOW = ['sent', 'prep', 'ready', 'done'];
+function normM(s) {
+  s = s && typeof s === 'object' ? s : {};
+  s.reqs = Array.isArray(s.reqs) ? s.reqs : []; s.del = Array.isArray(s.del) ? s.del : [];
+  s.cfg = Object.assign({ from: 1, to: 31 }, s.cfg || {}); delete s.kind; s.rev = s.rev || 0;
+  s.reqs.forEach(r => { r.lines = r.lines || []; r.hist = r.hist || []; r.status = MST[r.status] ? r.status : 'sent'; });
+  return s;
+}
+function loadM() { let s = null; try { s = JSON.parse(localStorage.getItem(MKEY) || 'null'); } catch (e) { } MS = normM(s); }
+function saveM() { try { localStorage.setItem(MKEY, JSON.stringify(MS)); } catch (e) { toast('พื้นที่จัดเก็บในเบราว์เซอร์เต็ม'); } }
+const mMine = () => { try { return JSON.parse(localStorage.getItem(MMINE) || '[]'); } catch (e) { return []; } };
+const mAddMine = id => { const a = mMine().filter(x => x !== id); a.unshift(id); try { localStorage.setItem(MMINE, JSON.stringify(a.slice(0, 30))); } catch (e) { } };
+const mreqPending = () => (MS ? MS.reqs.filter(r => r.q) : []);
+const mById = id => MS.reqs.find(r => r.id === id);
+const mOpen = r => r.status !== 'done' && r.status !== 'cancel';
+const mNo = r => r.no || 'รอเลขที่…';
+const mDept = r => r.dept + (r.other ? ' (' + r.other + ')' : '');
+const mQty = r => r.lines.reduce((s, l) => s + (+l.qty || 0), 0);
+const mPrep = l => l.prep == null ? l.qty : l.prep;
+const mWhen = ts => { if (!ts) return ''; const d = new Date(ts); return thDate(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' น.'; };
+const mMonth = ts => { const d = new Date(ts); return d.getFullYear() + '-' + pad(d.getMonth() + 1); };
+const mLast = r => { const x = r.hist[r.hist.length - 1]; return x ? x.at : r.ts; };
+function mBadge(st, big) { const m = MST[st] || MST.sent; return h('span', { class: 'mbadge' + (big ? ' big' : ''), style: 'color:' + m.c + ';background:' + m.bg }, m.t); }
+function mOpenNow() { const d = new Date().getDate(), c = MS.cfg; return d >= (+c.from || 1) && d <= (+c.to || 31); }
+const mWindowText = () => (+MS.cfg.from || 1) <= 1 && (+MS.cfg.to || 31) >= 31 ? 'เปิดรับใบเบิกทุกวัน' : 'เปิดรับใบเบิกวันที่ ' + MS.cfg.from + '–' + MS.cfg.to + ' ของทุกเดือน';
+function mOldNote() { return ui.mOld ? h('div', { class: 'note warn' }, h('b', {}, 'โค้ด Apps Script ยังเป็นเวอร์ชันเดิม: '), 'ใบเบิกประจำเดือนจะยังไม่ถึงแอดมิน จนกว่าจะวางโค้ด server.gs ใหม่ แล้ว Deploy เป็นเวอร์ชันใหม่ (Manage deployments > PPEV4 > New version)') : null; }
+function mTouch(r, st, extra) {
+  if (st && st !== r.status) { r.status = st; r.hist.push({ s: st, at: Date.now(), by: cfg.user || '' }); }
+  Object.assign(r, extra || {}); r.u = Date.now(); r.q = 1; saveM(); render(); mPush();
+}
+
+/* ---- sync ---- */
+let mpushT = null, mpushing = false, magain = false;
+function mPush() { if (!cfg.syncUrl) return; clearTimeout(mpushT); mpushT = setTimeout(doMPush, ui.kiosk ? 0 : 600); }
+async function doMPush() {
+  if (!ui.mSrv) { if (!ui.mOld) mPull(true); return; }
+  if (mpushing) { magain = true; return; }
+  const sent = mreqPending(), cfgD = !ui.kiosk && cfg.mcfgDirty;
+  if (!sent.length && !cfgD) return;
+  let body;
+  if (ui.kiosk) body = { mode: 'mreq_append', reqs: sent };
+  else { if (!authed()) { ui.sync = 'err'; renderRail(); return; } body = { mode: 'mreq_put', reqs: sent, del: MS.del, cfg: cfgD ? MS.cfg : undefined, token: cfg.session.token }; }
+  const us = new Map(sent.map(r => [r.id, r.u]));
+  mpushing = true; ui.sync = 'busy'; renderRail();
+  try {
+    const res = await api(body, 30000);
+    if (res && res.ok === false && res.error === 'auth' && !ui.kiosk) { cfg.session = null; saveCfg(); ui.skipLogin = false; mpushing = false; render(); return; }
+    if (!res || res.ok !== true) throw new Error('bad response');
+    ui.sync = 'on';
+    MS.reqs.forEach(r => { if (us.has(r.id) && us.get(r.id) === r.u) delete r.q; if (res.nos && res.nos[r.id]) r.no = res.nos[r.id]; });
+    if (cfgD) { cfg.mcfgDirty = false; saveCfg(); }
+    saveM();
+  } catch (e) { ui.sync = 'err'; ui.syncErr = (e && e.message) || 'error'; }
+  mpushing = false; render();
+  if (magain) { magain = false; mPush(); }
+}
+async function mPull(silent, ms) {
+  if (!cfg.syncUrl) return;
+  try {
+    const ctl = ms ? new AbortController() : null, tm = ms ? setTimeout(() => ctl.abort(), ms) : 0;
+    let d; try { const r = await fetch(cfg.syncUrl + (cfg.syncUrl.includes('?') ? '&' : '?') + 'p=mreq', ctl ? { signal: ctl.signal } : undefined); d = await r.json(); } finally { clearTimeout(tm); }
+    if (!d || typeof d !== 'object') throw new Error('bad data');
+    if (d.kind !== 'mreq') { if (!ui.mOld) { ui.mOld = true; render(); } return; }
+    const was = ui.mOld; ui.mOld = false; ui.mSrv = true;
+    const srv = normM(d), loc = new Map(MS.reqs.map(r => [r.id, r])), dl = new Set(srv.del.concat(MS.del));
+    const out = srv.reqs.filter(r => !dl.has(r.id)).map(r => { const l = loc.get(r.id); return l && l.q ? l : r; });
+    const have = new Set(out.map(r => r.id));
+    MS.reqs.forEach(r => { if (!have.has(r.id) && r.q && !dl.has(r.id)) out.push(r); });
+    const before = JSON.stringify(MS.reqs) + JSON.stringify(MS.cfg);
+    MS.reqs = out; MS.del = [...dl]; if (!cfg.mcfgDirty) MS.cfg = srv.cfg; ui.mLastPull = Date.now();
+    saveM();
+    if (mreqPending().length || cfg.mcfgDirty) mPush();
+    if (was || before !== JSON.stringify(MS.reqs) + JSON.stringify(MS.cfg)) render(); else if (ui.page === 'mboard') render();
+    if (!silent) toast('อัปเดตสถานะล่าสุดแล้ว');
+  } catch (e) { if (!silent) toast('ดึงข้อมูลใบเบิกไม่ได้'); }
+}
+
+/* ---- หน้า: สร้างใบเบิก (พนักงานผ่าน QR #order=canteen หรือแอดมิน) ---- */
+const newM = () => ({ lines: [], dept: '', other: '', name: '', note: '', sentId: null });
+function mCart(lines, redraw) {
+  if (!lines.length) return h('div', { class: 'empty' }, 'ตะกร้ายังว่าง — เลือกของจากรายการด้านซ้าย');
+  return h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'รายการ'), h('th', { class: 'r' }, 'จำนวน'), h('th', {}, ''))),
+    h('tbody', {}, lines.map(l => {
+      const q = h('input', { type: 'number', min: '1', step: '1', value: l.qty, style: 'width:76px', 'aria-label': 'จำนวน' });
+      q.addEventListener('change', () => { const n = parseFloat(q.value); if (!(n > 0)) { q.value = l.qty; return toast('กรอกจำนวนให้ถูกต้อง'); } l.qty = n; redraw(); });
+      return h('tr', {}, h('td', {}, l.it.name, bal(l.it) <= 0 ? h('div', { class: 'mut', style: 'font-size:12.5px;color:var(--warn)' }, 'ตอนนี้ของหมด อาจได้ไม่ครบ') : null),
+        h('td', { class: 'r', style: 'white-space:nowrap' }, q, ' ', h('span', { class: 'mut' }, l.it.unit)),
+        h('td', { class: 'r' }, h('button', { class: 'btn sm sec', 'aria-label': 'ลบ', onclick: () => { lines.splice(lines.indexOf(l), 1); redraw(); } }, '✕')));
+    }))), h('p', { class: 'mut', style: 'text-align:right;margin:8px 0 0' }, lines.length + ' รายการ · รวม ', h('b', {}, qf(lines.reduce((s, l) => s + l.qty, 0))), ' ชิ้น'));
+}
+function mMineBox() {
+  const ids = mMine(), mine = ids.map(mById).filter(Boolean);
+  if (!mine.length) return null;
+  return h('div', { class: 'card', style: 'margin-bottom:14px' }, h('div', { class: 'bar', style: 'justify-content:space-between' }, h('h2', {}, 'ใบเบิกของฉัน (เครื่องนี้)'), h('button', { class: 'btn sm sec', onclick: () => mPull(false) }, '↻ อัปเดตสถานะ')),
+    h('div', { class: 'mlist' }, mine.slice(0, 6).map(r => h('div', { class: 'mrow' }, h('div', {}, h('b', {}, mNo(r)), h('div', { class: 'mut', style: 'font-size:13px' }, mDept(r) + ' · ' + r.name + ' · ' + r.lines.length + ' รายการ · ส่ง ' + mWhen(r.ts))), mBadge(r.status),
+      r.status === 'ready' ? h('div', { class: 'mready' }, '✓ จัดของเสร็จแล้ว มารับได้ที่ ' + locName(mainLoc().id)) : r.status === 'cancel' && r.reason ? h('div', { class: 'mut', style: 'flex-basis:100%;font-size:13px' }, 'เหตุผล: ' + r.reason) : null))));
+}
+PAGES.mnew = function () {
+  const loc = mainLoc().id, R = ui.mnew = ui.mnew || newM();
+  const page = h('div');
+  page.append(pageHead('ใบเบิก PPE ประจำเดือน', 'เบิกล่วงหน้าจาก ' + locName(loc) + ' · แอดมินจัดของให้ แล้วมารับเองเมื่อสถานะเป็น "พร้อมให้รับ"',
+    !isKiosk() ? h('button', { class: 'btn sec', onclick: () => go('mreq') }, '← กลับรายการใบเบิก') : null));
+  page.append(mOldNote() || '');
+  if (isKiosk() && !cfg.syncUrl) page.append(h('p', { class: 'syncnote warn' }, '⚠ เครื่องนี้ยังไม่ได้เชื่อมต่อระบบกลาง ใบเบิกจะไม่ถึงแอดมิน — แจ้งแอดมินให้สร้าง QR ใหม่'));
+  if (R.sentId) {
+    const r = mById(R.sentId);
+    if (r) {
+      const ok = !r.q;
+      page.append(h('div', { class: ok ? 'receipt' : 'caution' }, h('h2', {}, ok ? '✓ ส่งใบเบิกถึงแอดมินแล้ว' : (ui.sync === 'err' ? '⚠ ยังส่งไม่สำเร็จ — อย่าปิดหน้านี้ ระบบจะลองส่งใหม่' : 'กำลังส่งใบเบิกถึงแอดมิน…')),
+        h('p', { style: 'margin:6px 0' }, 'เลขที่ ', h('b', { style: 'font-size:20px' }, mNo(r)), ' · ' + mDept(r) + ' · ' + r.name),
+        h('ul', { style: 'margin:0 0 8px;padding-left:20px' }, r.lines.map(l => h('li', {}, l.name + ' × ' + qf(l.qty) + ' ' + l.unit))),
+        ok ? h('p', { class: 'hint', style: 'margin:0 0 8px' }, 'ติดตามสถานะได้ที่ "ใบเบิกของฉัน" ด้านล่าง หรือบอร์ดสถานะหน้าห้อง PPE — เมื่อขึ้น "พร้อมให้รับ" (สีเขียว) มารับของได้เลย') : null,
+        h('div', { class: 'bar' }, !ok && ui.sync === 'err' ? h('button', { class: 'btn', onclick: () => { ui.sync = 'busy'; render(); mPush(); } }, 'ส่งอีกครั้ง') : null,
+          h('button', { class: ok ? 'btn' : 'btn sec', disabled: !ok && isKiosk(), onclick: () => { ui.mnew = newM(); render(); window.scrollTo(0, 0); } }, ok ? 'เสร็จสิ้น / สร้างใบใหม่' : 'รอให้ส่งสำเร็จ…'))));
+      if (!isKiosk() && ok) page.append(h('div', { class: 'bar', style: 'margin-bottom:14px' }, h('button', { class: 'btn sec', onclick: () => mDialog(r.id) }, 'เปิดใบเบิกนี้')));
+    }
+  }
+  if (isKiosk()) { const mb = mMineBox(); if (mb) page.append(mb); }
+  const open = mOpenNow() || !isKiosk();
+  if (!open) { page.append(h('div', { class: 'note warn' }, h('b', {}, 'ตอนนี้ปิดรับใบเบิกประจำเดือน: '), mWindowText() + ' — ถ้าต้องการใช้ด่วน ให้เบิกตามปกติที่ QR เบิก PPE')); return page; }
+  if (R.sentId && mById(R.sentId) && isKiosk()) return page;
+  const items = itemsAt(loc);
+  if (!items.length) { page.append(h('div', { class: 'empty' }, 'คลังหลักยังไม่มีรายการ PPE')); return page; }
+  const cartBox = h('div'), warnBox = h('div'), left = h('div', { class: 'card' }), right = h('div', { class: 'card sticky' });
+  left.append(h('h2', {}, '1. เลือกของใส่ตะกร้า'), picker({
+    items, info: it => bal(it) > 0 ? 'มีของ' : 'หมด',
+    onAdd: (it, n) => { const ex = R.lines.find(l => l.it.id === it.id); if (ex) ex.qty += n; else R.lines.push({ it, qty: n }); toast('เพิ่ม ' + it.name + ' ลงตะกร้า'); drawCart(); }
+  }));
+  const deptWrap = h('div', { class: 'field' });
+  function drawWarn() {
+    warnBox.textContent = ''; if (!R.dept) return;
+    const op = MS.reqs.filter(r => r.dept === R.dept && mOpen(r));
+    if (op.length) warnBox.append(h('div', { class: 'caution', style: 'font-size:14px' }, h('b', {}, '⚠ แผนกนี้มีใบเบิกที่ยังไม่ได้รับของ ' + op.length + ' ใบ'), h('span', {}, op.map(r => mNo(r) + ' (' + MST[r.status].s + ', ' + r.name + ')').join(' · ')), h('span', {}, 'ตรวจสอบก่อนว่าไม่ได้เบิกซ้ำ — ถ้าต้องการเพิ่มจริง ส่งได้ตามปกติ')));
+  }
+  function drawDept() {
+    deptWrap.textContent = ''; deptWrap.append(h('label', {}, 'แผนก *'));
+    const s = h('select', { 'aria-label': 'แผนก' }); s.append(h('option', { value: '' }, '— เลือกแผนก —'));
+    deptNames().forEach(d => s.append(h('option', { value: d }, d)));
+    s.value = R.dept; s.addEventListener('change', () => { R.dept = s.value; if (!isOther(R.dept)) R.other = ''; drawDept(); drawWarn(); });
+    deptWrap.append(s);
+    if (isOther(R.dept)) { const o = h('input', { type: 'text', placeholder: 'โปรดระบุแผนก / หน่วยงาน *', value: R.other || '', style: 'margin-top:8px', 'aria-label': 'ระบุแผนกอื่นๆ' }); o.addEventListener('input', () => R.other = o.value); deptWrap.append(o); }
+  }
+  drawDept(); drawWarn();
+  const nm = h('input', { type: 'text', placeholder: 'ชื่อ-นามสกุล', value: R.name, autocomplete: 'off' }); nm.addEventListener('input', () => R.name = nm.value);
+  const nt = h('input', { type: 'text', placeholder: 'เช่น สำหรับกะ B / ต้องการภายในวันที่…', value: R.note }); nt.addEventListener('input', () => R.note = nt.value);
+  right.append(h('h2', {}, '2. ตะกร้า'), cartBox, h('h2', { style: 'margin:16px 0 8px' }, '3. ข้อมูลผู้เบิก'), deptWrap, warnBox, h('div', { style: 'height:10px' }), field('ชื่อผู้เบิก *', nm), h('div', { style: 'height:10px' }), field('หมายเหตุถึงแอดมิน', nt),
+    h('button', { class: 'btn big', style: 'width:100%;margin-top:12px', onclick: submitM }, 'ส่งใบเบิกถึงแอดมิน'),
+    h('p', { class: 'hint', style: 'margin:8px 0 0' }, mWindowText() + ' · สต็อกจะถูกตัดตอนมารับของ ตามจำนวนที่จัดได้จริง'));
+  function drawCart() { cartBox.textContent = ''; cartBox.append(mCart(R.lines, drawCart)); }
+  drawCart();
+  function submitM() {
+    const dept = (R.dept || '').trim(), name = (R.name || '').trim(), other = (R.other || '').trim();
+    if (!R.lines.length) return toast('ตะกร้ายังว่าง');
+    if (!dept) return toast('กรุณาเลือกแผนก');
+    if (isOther(dept) && !other) return toast('กรุณาระบุแผนก / หน่วยงาน');
+    if (!name) return toast('กรุณากรอกชื่อผู้เบิก');
+    const now = Date.now(), r = { id: uid(), ts: now, u: now, date: today(), loc, dept, other, name, note: R.note.trim(), status: 'sent', hist: [{ s: 'sent', at: now, by: name }],
+      lines: R.lines.map(l => ({ item: l.it.id, code: l.it.code || '', name: l.it.name, unit: l.it.unit, qty: l.qty })), q: 1 };
+    MS.reqs.push(r); saveM(); if (isKiosk()) mAddMine(r.id);
+    ui.mnew = Object.assign(newM(), { sentId: r.id });
+    if (!cfg.syncUrl) delete r.q;
+    render(); mPush(); window.scrollTo(0, 0);
+  }
+  page.append(h('div', { class: 'split' }, left, right));
+  return page;
+};
+
+/* ---- หน้า: แอดมินจัดการใบเบิก ---- */
+PAGES.mreq = function () {
+  const M = ui.mreq = ui.mreq || { tab: 'sent', q: '', month: thisMonth() };
+  const page = h('div');
+  page.append(pageHead('ใบเบิกประจำเดือน', 'เฉพาะ ' + locName(mainLoc().id) + ' · พนักงานส่งใบเบิก → แอดมินจัดของ → แจ้งพร้อมรับ → พนักงานมารับ (ตัดสต็อกตอนรับ)',
+    h('button', { class: 'btn', onclick: () => { ui.mnew = newM(); go('mnew'); } }, '+ สร้างใบเบิก'),
+    h('button', { class: 'btn sec', onclick: () => mLink('order') }, 'QR ส่งใบเบิก'),
+    h('button', { class: 'btn sec', onclick: () => mLink('board') }, 'QR / เปิดบอร์ดสถานะ'),
+    h('button', { class: 'btn sec', onclick: () => mPull(false) }, '↻')));
+  page.append(mOldNote() || '');
+  const cnt = {}; Object.keys(MST).forEach(k => cnt[k] = 0); MS.reqs.forEach(r => cnt[r.status]++);
+  page.append(h('div', { class: 'kpis' }, ['sent', 'prep', 'ready', 'done'].map(k => h('div', { class: 'kpi' + (k === 'sent' && cnt.sent ? ' warn' : '') }, h('button', { onclick: () => { M.tab = k; render(); } }, h('b', { style: 'color:' + MST[k].c }, cnt[k]), h('span', {}, MST[k].t + (k === 'done' ? ' (ทั้งหมด)' : '')))))));
+  const chips = h('div', { class: 'chips' });
+  [['sent', MST.sent.t], ['prep', MST.prep.t], ['ready', MST.ready.t], ['done', MST.done.t], ['cancel', MST.cancel.t], ['all', 'ทั้งหมด']].forEach(([k, t]) =>
+    chips.append(h('button', { class: 'chip', 'aria-pressed': M.tab === k, onclick: () => { M.tab = k; render(); } }, t, ' ', h('b', {}, k === 'all' ? MS.reqs.length : cnt[k]))));
+  const qi = h('input', { type: 'search', placeholder: 'ค้นหาเลขที่ / ชื่อ / แผนก', value: M.q, 'aria-label': 'ค้นหาใบเบิก', style: 'max-width:280px' });
+  const months = [...new Set(MS.reqs.map(r => (r.date || '').slice(0, 7)).concat(thisMonth()))].filter(Boolean).sort().reverse();
+  const msel = selectEl([['', 'ทุกเดือน']].concat(months.map(m => [m, monthLabel(m)])), M.month, v => { M.month = v; render(); }, { 'aria-label': 'เดือน', style: 'max-width:160px' });
+  const list = h('div');
+  qi.addEventListener('input', () => { M.q = qi.value; drawList(); });
+  page.append(h('div', { class: 'card' }, h('div', { class: 'bar', style: 'justify-content:space-between;margin-bottom:10px' }, chips, h('div', { class: 'bar' }, qi, msel)), list));
+  function drawList() {
+    list.textContent = '';
+    const q = M.q.trim().toLowerCase();
+    const rows = MS.reqs.filter(r => (M.tab === 'all' || r.status === M.tab) && (!M.month || mOpen(r) || (r.date || '').slice(0, 7) === M.month) && (!q || (mNo(r) + ' ' + r.name + ' ' + mDept(r)).toLowerCase().includes(q)))
+      .sort((a, b) => mOpen(a) ? a.ts - b.ts : mLast(b) - mLast(a));
+    if (!rows.length) { list.append(h('div', { class: 'empty' }, 'ไม่มีใบเบิกในสถานะนี้')); return; }
+    list.append(h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, ['เลขที่', 'วันที่ส่ง', 'แผนก', 'ผู้เบิก', 'รายการ', 'สถานะ', ''].map(x => h('th', {}, x)))),
+      h('tbody', {}, rows.map(r => h('tr', { style: 'cursor:pointer', onclick: () => mDialog(r.id) }, h('td', {}, h('b', {}, mNo(r)), r.q ? h('span', { class: 'mut', title: 'ยังไม่ได้ซิงค์' }, ' •') : null), h('td', {}, mWhen(r.ts)), h('td', {}, mDept(r)), h('td', {}, r.name),
+        h('td', {}, r.lines.length + ' รายการ (' + qf(mQty(r)) + ' ชิ้น)'), h('td', {}, mBadge(r.status)), h('td', { class: 'r' }, h('button', { class: 'btn sm sec' }, 'เปิด'))))))));
+  }
+  drawList();
+  /* ตั้งค่ารอบรับใบเบิก */
+  const f = h('input', { type: 'number', min: '1', max: '31', value: MS.cfg.from, style: 'width:70px', 'aria-label': 'ตั้งแต่วันที่' });
+  const t = h('input', { type: 'number', min: '1', max: '31', value: MS.cfg.to, style: 'width:70px', 'aria-label': 'ถึงวันที่' });
+  page.append(h('div', { class: 'card' }, h('h2', {}, 'รอบเปิดรับใบเบิก'), h('p', { class: 'hint' }, 'พนักงานส่งใบเบิกผ่าน QR ได้เฉพาะช่วงวันที่นี้ของทุกเดือน (1–31 = เปิดทุกวัน) · แอดมินสร้างใบเบิกแทนได้ทุกวัน · ตอนนี้: ' + mWindowText()),
+    h('div', { class: 'bar' }, 'วันที่', f, 'ถึง', t, h('button', { class: 'btn', onclick: () => { const a = Math.max(1, Math.min(31, +f.value || 1)), b = Math.max(a, Math.min(31, +t.value || 31)); MS.cfg = { from: a, to: b }; cfg.mcfgDirty = true; saveCfg(); saveM(); render(); mPush(); toast('บันทึกรอบเปิดรับแล้ว'); } }, 'บันทึก'),
+      h('button', { class: 'btn sec', onclick: () => { MS.cfg = { from: 1, to: 31 }; cfg.mcfgDirty = true; saveCfg(); saveM(); render(); mPush(); } }, 'เปิดทุกวัน'))));
+  return page;
+};
+function mDialog(id) {
+  const r = mById(id); if (!r) return;
+  const edit = mOpen(r), main = mainLoc().id;
+  const avail = l => { const it = itemById(l.item); return it ? bal(it) : null; };
+  const tb = h('tbody');
+  r.lines.forEach((l, i) => {
+    const a = avail(l), p = mPrep(l);
+    const inp = edit ? h('input', { type: 'number', min: '0', step: '1', value: p, style: 'width:76px', 'aria-label': 'จัดได้จริง' }) : null;
+    if (inp) inp.addEventListener('change', () => { const n = Math.max(0, parseFloat(inp.value) || 0); l.prep = n; mTouch(r); mDialog(id); });
+    tb.append(h('tr', { class: p < l.qty ? 'mshort' : '' }, h('td', { class: 'c' }, i + 1), h('td', {}, l.name, l.code ? h('div', { class: 'mut', style: 'font-size:12px' }, l.code) : null),
+      h('td', { class: 'r' }, qf(l.qty) + ' ' + l.unit), h('td', { class: 'r' + (a != null && a < p ? ' mwarn' : '') }, a == null ? '—' : qf(a)),
+      h('td', { class: 'r', style: 'white-space:nowrap' }, inp || h('b', {}, qf(p)), ' ', h('span', { class: 'mut' }, l.unit))));
+  });
+  const short = r.lines.filter(l => { const a = avail(l); return a != null && a < mPrep(l); });
+  const body = h('div', {},
+    h('div', { class: 'bar', style: 'justify-content:space-between;align-items:flex-start' }, h('div', {}, h('div', { style: 'font-size:15px' }, h('b', {}, mDept(r)), ' · ' + r.name), h('div', { class: 'mut', style: 'font-size:13px' }, 'ส่งเมื่อ ' + mWhen(r.ts) + (r.note ? ' · หมายเหตุ: ' + r.note : ''))), mBadge(r.status, true)),
+    h('div', { class: 'msteps' }, MFLOW.map(s => { const hh = r.hist.filter(x => x.s === s).pop(), on = MFLOW.indexOf(s) <= MFLOW.indexOf(r.status) && r.status !== 'cancel'; return h('div', { class: 'mstep' + (on ? ' on' : '') }, h('i', {}), h('b', {}, MST[s].s), h('small', {}, hh ? mWhen(hh.at) : '')); })),
+    r.status === 'cancel' ? h('div', { class: 'note warn' }, h('b', {}, 'ยกเลิกแล้ว: '), r.reason || '—') : null,
+    r.status === 'done' ? h('div', { class: 'note' }, h('b', {}, 'รับของแล้ว: '), (r.pickBy || '—') + ' · ' + mWhen(r.pickAt) + ' · ตัดสต็อกแล้ว (ดูได้ที่ ประวัติเบิก-จ่าย)') : null,
+    h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', { class: 'c' }, '#'), h('th', {}, 'รายการ'), h('th', { class: 'r' }, 'ขอเบิก'), h('th', { class: 'r' }, 'คงเหลือคลัง'), h('th', { class: 'r' }, r.status === 'done' ? 'จ่ายจริง' : 'จัดได้จริง'))), tb)),
+    edit ? h('p', { class: 'hint' }, 'แก้ช่อง "จัดได้จริง" ถ้าของไม่พอหรือให้น้อยกว่าที่ขอ (ใส่ 0 = ไม่ได้รายการนี้) — สต็อกจะถูกตัดตามช่องนี้ตอนกด "รับของแล้ว"') : null,
+    short.length && edit ? h('div', { class: 'note warn' }, '⚠ ' + short.length + ' รายการจัดเกินยอดคงเหลือในระบบ — ลดจำนวน หรือรับของเข้าก่อน') : null,
+    h('details', { style: 'margin-top:10px' }, h('summary', { style: 'cursor:pointer;color:var(--act)' }, 'ประวัติสถานะ'), h('ul', { style: 'margin:6px 0;padding-left:20px;font-size:13.5px' }, r.hist.map(x => h('li', {}, mWhen(x.at) + ' — ' + (MST[x.s] || {}).t + (x.by ? ' (' + x.by + ')' : ''))))));
+  const B = (label, cls, fn) => h('button', { class: 'btn ' + (cls || ''), onclick: fn }, label);
+  const foot = [B('🖨 พิมพ์ใบจัดของ', 'sec', () => mPrint(r))];
+  const by = () => { if (!cfg.user) { const n = prompt('ชื่อแอดมินผู้ทำรายการ'); if (!n) return false; cfg.user = n.trim(); saveCfg(); } return true; };
+  if (r.status === 'sent') foot.push(B('เริ่มจัดของ', '', () => { if (by()) { mTouch(r, 'prep'); mDialog(id); } }));
+  if (r.status === 'prep') foot.push(B('จัดเสร็จ — แจ้งพร้อมให้รับ', '', () => { if (by()) { mTouch(r, 'ready'); mDialog(id); toast('แจ้งพร้อมให้รับแล้ว — ขึ้นบอร์ดสถานะเป็นสีเขียว'); } }));
+  if (r.status === 'ready') foot.push(B('← กลับไปกำลังจัด', 'sec', () => { mTouch(r, 'prep'); mDialog(id); }), B('✓ พนักงานรับของแล้ว (ตัดสต็อก)', '', () => mPickup(r)));
+  if (edit) foot.push(B('ยกเลิกใบเบิก', 'danger', () => { const why = prompt('เหตุผลที่ยกเลิก (พนักงานจะเห็นข้อความนี้)'); if (why == null) return; if (!why.trim()) return toast('กรุณาใส่เหตุผล'); if (by()) { mTouch(r, 'cancel', { reason: why.trim() }); mDialog(id); } }));
+  if (r.status === 'done') foot.push(B('ย้อนกลับ (คืนสต็อก)', 'danger', () => {
+    if (!confirm('ย้อนใบ ' + mNo(r) + ' กลับเป็น "พร้อมให้รับ" และลบการตัดสต็อกของใบนี้?')) return;
+    const ids = store.moves.filter(m => m.ref === r.id && m.kind === 'req').map(m => m.id); if (ids.length) purge(ids);
+    mTouch(r, 'ready', { pickBy: '', pickAt: 0 }); mDialog(id);
+  }));
+  if (r.status === 'cancel') foot.push(B('เปิดใบนี้อีกครั้ง', 'sec', () => { mTouch(r, 'sent', { reason: '' }); mDialog(id); }), B('ลบถาวร', 'danger', () => { if (!confirm('ลบใบ ' + mNo(r) + ' ถาวร?')) return; MS.del.push(r.id); MS.reqs = MS.reqs.filter(x => x !== r); cfg.mcfgDirty = true; saveCfg(); saveM(); closeDlg(); render(); mPush(); }));
+  foot.push(B('ปิด', 'sec', closeDlg));
+  openDlg('ใบเบิก ' + mNo(r), body, foot);
+}
+function mPickup(r) {
+  const main = mainLoc().id, lines = r.lines.filter(l => mPrep(l) > 0);
+  if (!lines.length) return toast('ไม่มีรายการที่จัดได้ — ถ้าไม่ได้ของเลย ให้ยกเลิกใบเบิกแทน');
+  for (const l of lines) { const it = itemById(l.item); if (!it || it.loc !== main) return toast('ไม่พบรายการ ' + l.name + ' ในคลังหลัก'); if (mPrep(l) > bal(it)) return toast('คงเหลือไม่พอ: ' + l.name + ' (มี ' + qf(bal(it)) + ')'); }
+  if (store.moves.some(m => m.ref === r.id && m.kind === 'req')) return toast('ใบนี้ตัดสต็อกไปแล้ว');
+  const who = prompt('ชื่อผู้มารับของ', r.name); if (who == null) return;
+  const pickBy = who.trim() || r.name, d = today();
+  lines.forEach(l => { const it = itemById(l.item); addMove({ item: it.id, loc: main, type: 'out', kind: 'req', qty: mPrep(l), cost: it.cost, date: d, party: r.dept, note: 'ใบเบิกประจำเดือน ' + mNo(r) + (r.other ? ' · ระบุ: ' + r.other : '') + (pickBy !== r.name ? ' · ผู้รับ: ' + pickBy : ''), by: r.name, ref: r.id }); });
+  commit();
+  mTouch(r, 'done', { pickBy, pickAt: Date.now() }); mDialog(r.id); toast('บันทึกรับของและตัดสต็อกแล้ว');
+}
+function mPrint(r) {
+  const now = Date.now(), main = mainLoc();
+  const rows = r.lines.map((l, i) => { const it = itemById(l.item), a = it ? bal(it) : null, p = mPrep(l); return '<tr><td class=c><i class=box></i></td><td class=c>' + (i + 1) + '</td><td class=code>' + esc(l.code || '') + '</td><td>' + esc(l.name) + '</td><td class=r>' + qf(l.qty) + ' <small>' + esc(l.unit) + '</small></td><td class=r>' + (a == null ? '—' : qf(a)) + '</td><td class="r k">' + (r.status === 'sent' ? '' : qf(p)) + '</td><td class=blank></td></tr>'; }).join('');
+  const css = '@page{size:A4;margin:12mm}body{padding:0;font:13.5px Sarabun,system-ui,sans-serif}header{display:flex;justify-content:space-between;gap:16px;border-bottom:2px solid #111;padding-bottom:8px}h1{font-size:22px;margin:0}.sub{color:#444;margin-top:2px}.meta{width:auto;margin:0}.meta th,.meta td{border:0;padding:1px 6px;text-align:left;font-size:13px}.meta th{color:#555;font-weight:500}.info{margin:10px 0 4px;font-size:14px}.lines th{background:#eee;font-size:12.5px}.lines td,.lines th{padding:5px 6px}.c{text-align:center;width:28px}.code{font-size:12px;color:#444;white-space:nowrap}.k{font-weight:700;background:#f6f6f6}.blank{width:70px}.box{display:inline-block;width:13px;height:13px;border:1.5px solid #111}.sig{display:flex;gap:28px;margin-top:36px}.sig div{flex:1;text-align:center;font-size:13px}.sig p{border-top:1px solid #111;margin:30px 0 2px;padding-top:4px}.hint{font-size:12px;color:#555;margin-top:8px}';
+  const html = '<style>' + css + '</style><header><div><h1>ใบจัดของ — ใบเบิก PPE ประจำเดือน</h1><div class=sub>คลัง ' + esc(main.name) + ' · พนักงานมารับเอง</div></div><table class=meta><tr><th>เลขที่</th><td><b>' + esc(mNo(r)) + '</b></td></tr><tr><th>วันที่ส่ง</th><td>' + mWhen(r.ts) + '</td></tr><tr><th>พิมพ์เมื่อ</th><td>' + mWhen(now) + '</td></tr><tr><th>สถานะ</th><td>' + esc(MST[r.status].t) + '</td></tr></table></header>'
+    + '<div class=info><b>แผนก:</b> ' + esc(mDept(r)) + ' &nbsp; <b>ผู้เบิก:</b> ' + esc(r.name) + (r.note ? '<br><b>หมายเหตุ:</b> ' + esc(r.note) : '') + '</div>'
+    + '<table class=lines><thead><tr><th class=c>✓</th><th class=c>#</th><th>รหัส</th><th>รายการ</th><th class=r>ขอเบิก</th><th class=r>คงเหลือ<br>คลัง</th><th class="r k">จัดได้</th><th class=r>จ่ายจริง</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<p class=hint>รวม ' + r.lines.length + ' รายการ · ' + qf(mQty(r)) + ' ชิ้น — หลังพนักงานรับของ ให้กด "พนักงานรับของแล้ว" ในแอป ระบบจะตัดสต็อกตามจำนวนที่จัดได้</p>'
+    + '<div class=sig><div><p>ผู้จัดของ</p>วันที่ ......../......../........</div><div><p>ผู้รับของ</p>วันที่ ......../......../........</div></div>';
+  printDoc('ใบจัดของ ' + mNo(r), html);
+}
+
+/* ---- บอร์ดสถานะ (#board=canteen) ---- */
+PAGES.mboard = function () {
+  const B = ui.mb = ui.mb || { q: '' };
+  const page = h('div', { class: 'mboard' });
+  const m0 = thisMonth();
+  const all = MS.reqs.filter(r => r.status !== 'cancel' && (mOpen(r) || (r.date || '').slice(0, 7) === m0 || (r.pickAt && mMonth(r.pickAt) === m0)));
+  page.append(h('div', { class: 'bar', style: 'justify-content:space-between;margin-bottom:12px' }, h('div', {}, h('h1', { style: 'font-size:26px' }, 'สถานะใบเบิก PPE ประจำเดือน'), h('p', { class: 'mut', style: 'margin:2px 0 0' }, locName(mainLoc().id) + ' · ' + monthLabel(m0) + ' · อัปเดต ' + (ui.mLastPull ? mWhen(ui.mLastPull) : '—'))),
+    h('div', { class: 'bar' }, (() => { const q = h('input', { type: 'search', placeholder: 'ค้นหาชื่อ / แผนก / เลขที่', value: B.q, 'aria-label': 'ค้นหา', style: 'min-width:220px' }); q.addEventListener('input', () => { B.q = q.value; draw(); }); return q; })(), h('button', { class: 'btn sec', onclick: () => mPull(false) }, '↻ อัปเดต'))));
+  page.append(mOldNote() || '');
+  const grid = h('div', { class: 'mcols' }); page.append(grid);
+  function draw() {
+    grid.textContent = ''; const q = B.q.trim().toLowerCase();
+    const rows = all.filter(r => !q || (mNo(r) + ' ' + r.name + ' ' + mDept(r)).toLowerCase().includes(q));
+    ['ready', 'prep', 'sent', 'done'].forEach(st => {
+      const rs = rows.filter(r => r.status === st).sort((a, b) => st === 'done' ? mLast(b) - mLast(a) : mLast(a) - mLast(b));
+      const col = h('section', { class: 'mcol', style: '--mc:' + MST[st].c + ';--mbg:' + MST[st].bg }, h('h2', {}, MST[st].t, ' ', h('span', {}, rs.length)));
+      if (!rs.length) col.append(h('div', { class: 'mut', style: 'padding:10px 4px' }, '—'));
+      rs.slice(0, st === 'done' ? 30 : 200).forEach(r => col.append(h('div', { class: 'mtile' }, h('div', { class: 'no' }, mNo(r)), h('div', { class: 'dp' }, mDept(r)), h('div', { class: 'nm' }, r.name + ' · ' + r.lines.length + ' รายการ'),
+        h('div', { class: 'tm' }, (st === 'done' ? 'รับเมื่อ ' + mWhen(r.pickAt) : st === 'ready' ? 'พร้อมตั้งแต่ ' + mWhen(mLast(r)) : 'ส่งเมื่อ ' + mWhen(r.ts))))));
+      grid.append(col);
+    });
+  }
+  draw();
+  page.append(h('p', { class: 'hint', style: 'text-align:center;margin-top:14px' }, 'สีเขียว "พร้อมให้รับ" = มารับของได้ที่ ' + locName(mainLoc().id) + ' · หน้านี้อัปเดตเองทุก 1 นาที'));
+  return page;
+};
+
+/* ---- ลิงก์ / QR ---- */
+function mUrl(mode) { return location.href.split('#')[0] + '#' + mode + '=' + encodeURIComponent(mainLoc().id) + (okSync(cfg.syncUrl) ? '&sync=' + encodeURIComponent(cfg.syncUrl) : ''); }
+function mLink(mode) {
+  const url = mUrl(mode), isB = mode === 'board', title = isB ? 'บอร์ดสถานะใบเบิก' : 'ส่งใบเบิก PPE ประจำเดือน';
+  let svg = ''; try { svg = qrSvg(url, 5); } catch (e) { }
+  const qbox = h('div', { class: 'qrbox' }); qbox.innerHTML = svg || '<p class="hint">สร้าง QR ไม่ได้</p>';
+  const printQr = () => printDoc('QR ' + title, '<div style="text-align:center"><h1 style="font-size:34px;margin:10px 0">' + title + '</h1><h2 style="font-size:24px;margin:0 0 10px">' + esc(mainLoc().name) + '</h2><div style="width:420px;margin:20px auto">' + qrSvg(url, 8).replace(/<svg /, '<svg style="width:100%;height:auto" ') + '</div><p style="font-size:22px">' + (isB ? 'สแกนเพื่อดูสถานะใบเบิก<br>ขึ้นสีเขียว "พร้อมให้รับ" = มารับของได้' : 'สแกนเพื่อเลือกของใส่ตะกร้า แล้วส่งใบเบิกถึงแอดมิน<br>' + esc(mWindowText()) + ' · รอสถานะ "พร้อมให้รับ" แล้วมารับเอง') + '</p></div>');
+  openDlg('ลิงก์และ QR — ' + title, h('div', {}, h('p', { class: 'hint' }, isB ? 'เปิดลิงก์นี้ค้างไว้บนจอหน้าห้อง PPE หรือให้พนักงานสแกนดูสถานะ (ไม่แสดงราคา อัปเดตเองทุก 1 นาที)' : 'พนักงานสแกนแล้วจะเห็นเฉพาะหน้า "ใบเบิก PPE ประจำเดือน" ของคลังหลัก (ไม่มีเมนูแอดมิน)'),
+    okSync(cfg.syncUrl) ? null : h('p', { class: 'syncnote warn' }, 'ยังไม่ได้ตั้งค่าซิงค์ — ตั้งค่าก่อนแล้วค่อยสร้าง QR'), qbox, h('input', { type: 'text', value: url, readonly: true, onclick: e => e.target.select() })),
+    [h('button', { class: 'btn sec', onclick: closeDlg }, 'ปิด'), isB ? h('button', { class: 'btn sec', onclick: () => window.open(url, '_blank') }, 'เปิดบอร์ด') : null, h('button', { class: 'btn sec', onclick: printQr }, 'พิมพ์ QR'), h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(url).then(() => toast('คัดลอกลิงก์แล้ว'), () => toast('คัดลอกไม่ได้')) }, 'คัดลอกลิงก์')]);
+}
+
 /* ============ boot ============ */
-load(); loadLoan();
-const pull0 = pull; pull = function (silent, ms) { loanPull(true, ms); return pull0(silent, ms); };
+load(); loadLoan(); loadM();
+const pull0 = pull; pull = function (silent, ms) { loanPull(true, ms); mPull(true, ms); return pull0(silent, ms); };
 (function () { const sm = /[#&]sync=([^&]*)/.exec(location.hash); if (sm) { try { const u = decodeURIComponent(sm[1]); if (/^https:\/\/script\.google\.com\//.test(u) && u !== cfg.syncUrl) { cfg.syncUrl = u; saveCfg(); } } catch (e) {} } })();
-(function () { const m = /#(kiosk|count|lend)(?:=([^&]*))?/.exec(location.hash); if (m) { ui.kiosk = true; ui.kioskMode = m[1]; const id = m[2] ? decodeURIComponent(m[2]) : cfg.loc; if (locById(id)) cfg.loc = id; ui.page = ({ count: 'count', lend: 'lend' })[m[1]] || 'req'; } })();
+(function () { const m = /#(kiosk|count|lend|order|board)(?:=([^&]*))?/.exec(location.hash); if (m) { ui.kiosk = true; ui.kioskMode = m[1]; const id = m[2] ? decodeURIComponent(m[2]) : cfg.loc; if (locById(id)) cfg.loc = id; if (m[1] === 'order' || m[1] === 'board') cfg.loc = mainLoc().id; ui.page = KMODE[m[1]] || 'req'; } })();
 if (!ui.kiosk) ui.page = 'req';
 render();
 $('#menu').addEventListener('click', () => { ui.navOpen = !ui.navOpen; renderRail(); });
 $('#dlg').addEventListener('click', e => { if (e.target === e.currentTarget) closeDlg(); });
 if (cfg.syncUrl && authed() && !ui.kiosk) api({ mode: 'whoami', token: cfg.session.token }, 15000).then(r => { if (r && r.ok === false && r.error === 'auth') { cfg.session = null; saveCfg(); render(); } }).catch(() => { });
-if (cfg.syncUrl) { pull(true); setInterval(() => pull(true), ui.kiosk ? 300000 : 60000); }
+if (cfg.syncUrl) { pull(true); setInterval(() => pull(true), ui.kiosk ? 300000 : 60000); if (ui.kioskMode === 'board' || ui.kioskMode === 'order') setInterval(() => mPull(true), 60000); }
 
 </script>
 <script type="text/plain" id="lib-h2c">
