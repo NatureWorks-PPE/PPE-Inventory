@@ -234,6 +234,11 @@ td.mwarn{color:var(--warn);font-weight:700}
 .mtile{background:var(--mbg);color:#14212B;border-radius:8px;padding:8px 10px;margin-bottom:8px}
 .mtile .no{font:700 16px var(--f-head)}.mtile .dp{font-weight:600}.mtile .nm,.mtile .tm{font-size:13px;color:#3b4a57}
 .mboard .mcol:first-child .mtile{border:2px solid var(--mc)}
+.reqmode{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin:0 0 14px}.reqsegs{display:flex;flex:1;min-width:260px;gap:6px;background:var(--card,#fff);border:1px solid var(--line,#dde3e8);border-radius:12px;padding:5px}
+.reqseg{flex:1;border:0;background:transparent;border-radius:9px;padding:8px 12px;text-align:left;cursor:pointer;font:inherit;color:inherit;display:flex;flex-direction:column;gap:1px}.reqseg b{font-size:15px}.reqseg span{font-size:12px;opacity:.75}
+.reqseg.on{background:var(--act,#14585e);color:#fff}.reqseg:not(.on):hover{background:rgba(0,0,0,.05)}.reqmode>.btn{align-self:center}
+.myreq{border:1px solid var(--line,#dde3e8);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.linkbtn{border:0;background:none;padding:2px 0;margin-top:2px;color:var(--act,#14585e);font:inherit;font-size:12.5px;cursor:pointer;text-decoration:underline}
 </style>
 </head>
 <body>
@@ -3328,7 +3333,9 @@ PAGES.req = function () {
   const loc = cfg.loc, R = ui.req = ui.req || { lines: [], dept: '', other: '', name: '', date: today(), note: '', receipt: null };
   const page = h('div');
   if (R.finished) return donePage('บันทึกการเบิกเรียบร้อย ขอบคุณครับ', () => { R.finished = false; R.last = null; render(); }, 'เบิกอีกครั้ง', slipBox(R.last));
-  page.append(pageHead('เบิก PPE', 'เบิกจากคลัง ' + locName(loc)));
+  const modeBar = reqModeBar();
+  if (ui.reqMode === 'm') { const mp = PAGES.mnew(); mp.insertBefore(modeBar, mp.children[1] || null); return mp; }
+  page.append(pageHead('เบิก PPE', 'เบิกจากคลัง ' + locName(loc)), modeBar);
   if (isKiosk() && !cfg.syncUrl && !R.receipt) page.append(syncNote());
   if (R.receipt) {
     const r = R.receipt;
@@ -3371,7 +3378,7 @@ PAGES.req = function () {
     const other = (R.other || '').trim(); if (isOther(dept) && !other) return toast('กรุณาระบุแผนก / หน่วยงาน (เลือก "อื่นๆ" ต้องระบุ)');
     if (!name) return toast('กรุณากรอกชื่อผู้เบิก — ถ้าไม่ใส่จะบันทึกไม่ได้');
     for (const l of R.lines) if (l.qty > bal(l.it)) return toast('มีของไม่พอ: ' + l.it.name);
-    const ref = uid();
+    const ref = uid(); rememberName(name);
     R.lines.forEach(l => addMove({ item: l.it.id, loc, type: 'out', kind: 'req', qty: l.qty, cost: l.it.cost, date: R.date || today(), party: dept, note: ((other ? 'ระบุ: ' + other : '') + (other && R.note.trim() ? ' · ' : '') + R.note.trim()), by: name, ref }));
     ui.req = { lines: [], dept: '', other: '', name: '', date: today(), note: '', receipt: { kind: 'req', no: slipNo('REQ', R.date || today(), ref), name, dept: dept + (other ? ' (' + other + ')' : ''), date: R.date || today(), note: R.note, loc: locName(loc), lines: R.lines.map(l => ({ name: l.it.name, qty: l.qty, unit: l.it.unit })) } };
     commit(); window.scrollTo(0, 0);
@@ -3380,6 +3387,53 @@ PAGES.req = function () {
   return page;
 };
 
+/* ---------- เลือกแบบการเบิก + สถานะการเบิกของฉัน ---------- */
+const MYNAME = 'ppe-myname';
+function rememberName(n) { try { localStorage.setItem(MYNAME, n); } catch (e) { } }
+function reqModeBar() {
+  const m = ui.reqMode === 'm' ? 'm' : 'now';
+  const seg = (k, t, sub) => h('button', { class: 'reqseg' + (m === k ? ' on' : ''), 'aria-pressed': m === k, onclick: () => { if (ui.reqMode !== k) { ui.reqMode = k; render(); window.scrollTo(0, 0); } } }, h('b', {}, t), h('span', {}, sub));
+  return h('div', { class: 'reqmode' }, h('div', { class: 'reqsegs', role: 'group', 'aria-label': 'แบบการเบิก' },
+    seg('now', 'เบิกทันที', 'หยิบของแล้วรับไปเลย'),
+    seg('m', 'เบิกประจำเดือน', 'ส่งใบเบิก แอดมินจัดให้ แล้วมารับที่ ' + mainLoc().name.split(' ')[0])),
+    h('button', { class: 'btn sec', onclick: myReqDlg }, '📋 สถานะการเบิกของฉัน'));
+}
+function myReqDlg() {
+  let saved = ''; try { saved = localStorage.getItem(MYNAME) || ''; } catch (e) { }
+  const nm = h('input', { type: 'search', placeholder: 'พิมพ์ชื่อหรือนามสกุลผู้เบิก', value: (ui.req && ui.req.name) || (ui.mnew && ui.mnew.name) || saved, 'aria-label': 'ชื่อผู้เบิก' });
+  const out = h('div', { style: 'margin-top:12px' });
+  const lo = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const lineList = ls => h('ul', { style: 'margin:4px 0 0;padding-left:20px;font-size:13.5px' }, ls.map(x => h('li', {}, x)));
+  function draw() {
+    out.textContent = '';
+    const q = lo(nm.value);
+    if (q.length < 2) { out.append(h('div', { class: 'empty' }, 'พิมพ์ชื่ออย่างน้อย 2 ตัวอักษร เพื่อดูรายการที่เคยเบิก')); return; }
+    const mids = new Set(MS ? MS.reqs.map(r => r.id) : []);
+    const mon = (MS ? MS.reqs : []).filter(r => lo(r.name).includes(q)).sort((a, b) => b.ts - a.ts).slice(0, 20);
+    const since = lastMonths(6)[0] + '-01', grp = {};
+    store.moves.filter(x => x.kind === 'req' && !mids.has(x.ref) && (x.date || '') >= since && lo(x.by).includes(q)).forEach(x => { (grp[x.ref || x.id] = grp[x.ref || x.id] || []).push(x); });
+    const now = Object.values(grp).sort((a, b) => (b[0].date || '').localeCompare(a[0].date || '') || (b[0].ts || 0) - (a[0].ts || 0)).slice(0, 30);
+    if (!mon.length && !now.length) { out.append(h('div', { class: 'empty' }, 'ไม่พบรายการเบิกของ "' + nm.value.trim() + '" (ย้อนหลัง 6 เดือน)')); return; }
+    if (mon.length) {
+      out.append(h('h3', { style: 'margin:0 0 6px' }, 'ใบเบิกประจำเดือน'));
+      mon.forEach(r => out.append(h('div', { class: 'myreq' }, h('div', { class: 'bar', style: 'justify-content:space-between' }, h('div', {}, h('b', {}, mNo(r)), h('div', { class: 'mut', style: 'font-size:12.5px' }, mDept(r) + ' · ' + r.name + ' · ส่ง ' + mWhen(r.ts))), mBadge(r.status)),
+        lineList(r.lines.map(l => l.name + ' × ' + qf(l.qty) + ' ' + l.unit + (r.status === 'done' && mPrep(l) !== l.qty ? ' (ได้รับ ' + qf(mPrep(l)) + ')' : ''))),
+        r.status === 'ready' ? h('div', { class: 'mready' }, '✓ จัดของเสร็จแล้ว มารับได้ที่ ' + locName(mainLoc().id)) : null,
+        r.status === 'done' ? h('div', { class: 'mut', style: 'font-size:12.5px;margin-top:4px' }, 'รับของแล้ว ' + mWhen(r.pickAt)) : null,
+        r.status === 'cancel' && r.reason ? h('div', { class: 'mut', style: 'font-size:12.5px;margin-top:4px' }, 'เหตุผลที่ยกเลิก: ' + r.reason) : null)));
+    }
+    if (now.length) {
+      out.append(h('h3', { style: 'margin:14px 0 6px' }, 'เบิกทันที (ย้อนหลัง 6 เดือน)'));
+      now.forEach(g => { const a = g[0];
+        out.append(h('div', { class: 'myreq' }, h('div', { class: 'bar', style: 'justify-content:space-between' }, h('div', {}, h('b', {}, thDate(a.date)), h('div', { class: 'mut', style: 'font-size:12.5px' }, (a.party || '') + ' · ' + (a.by || '') + ' · คลัง ' + locName(a.loc))), h('span', { class: 'badge ok' }, 'รับของแล้ว')),
+          lineList(g.map(x => { const it = itemById(x.item); return (it ? it.name : 'รายการที่ถูกลบ') + ' × ' + qf(x.qty) + ' ' + (it ? it.unit : ''); })))); });
+    }
+  }
+  let t = 0; nm.addEventListener('input', () => { clearTimeout(t); t = setTimeout(draw, 250); });
+  openDlg('สถานะการเบิกของฉัน', h('div', {}, h('p', { class: 'hint', style: 'margin:0 0 8px' }, 'ค้นหาจากชื่อผู้เบิก · ใบเบิกประจำเดือนดูสถานะได้ว่ารอจัด / กำลังจัด / พร้อมให้รับ'), nm, out),
+    [h('button', { class: 'btn sec', onclick: async () => { await mPull(true); try { await pull(true); } catch (e) { } draw(); toast('อัปเดตสถานะล่าสุดแล้ว'); } }, '↻ อัปเดตสถานะ'), h('button', { class: 'btn', onclick: closeDlg }, 'ปิด')]);
+  draw(); setTimeout(() => nm.focus(), 50);
+}
 /* ============ โอนสินค้า ============ */
 PAGES.xfer = function () {
   const page = h('div');
@@ -4421,7 +4475,8 @@ PAGES.lend = function () {
   const du = h('input', { type: 'date', value: B.due, min: today() }); du.addEventListener('change', () => B.due = du.value);
   const nt = h('input', { type: 'text', placeholder: 'เช่น ใช้งานที่ไหน / หมายเลขอุปกรณ์ (ถ้ามี)', value: B.note }); nt.addEventListener('input', () => B.note = nt.value);
   const sp = () => h('div', { style: 'height:10px' });
-  right.append(h('h2', {}, 'ใบยืม'), deptWrap, sp(), field('ชื่อผู้ยืม * (ต้องกรอกทุกครั้ง)', nm), sp(), field('กำหนดคืน (เว้นว่าง = ไม่กำหนด)', du), sp(), field('หมายเหตุ', nt),
+  const bd = h('input', { type: 'text', value: thDate(today()) + ' (ลงให้อัตโนมัติ)', readonly: true, tabindex: '-1', style: 'background:rgba(0,0,0,.04)', 'aria-label': 'วันที่ยืม' });
+  right.append(h('h2', {}, 'ใบยืม'), deptWrap, sp(), field('ชื่อผู้ยืม * (ต้องกรอกทุกครั้ง)', nm), sp(), h('div', { class: 'row' }, field('วันที่ยืม', bd), field('กำหนดคืน (เว้นว่าง = ไม่กำหนด)', du)), sp(), field('หมายเหตุ', nt),
     h('h2', { style: 'margin:16px 0 8px' }, 'รายการที่จะยืม'), cartBox, h('button', { class: 'btn big', style: 'width:100%;margin-top:12px', onclick: submit }, 'บันทึกการยืม'));
   function drawCart() { cartBox.textContent = ''; cartBox.append(loanCart(B.lines, drawCart)); }
   drawCart();
@@ -4468,22 +4523,52 @@ PAGES.lret = function () {
       const it = litemById(m.item) || { unit: '' }, left = lleft(m);
       const qn = h('input', { type: 'number', min: '1', max: String(left), step: '1', value: left, style: 'width:70px', 'aria-label': 'จำนวนที่รับคืน' });
       const cd = selectEl(Object.keys(COND).map(k => [k, COND[k]]), 'ok', null, { style: 'width:auto', 'aria-label': 'สภาพ' });
+      const rdt = h('input', { type: 'date', value: today(), max: today(), min: m.date || '', style: 'width:auto', 'aria-label': 'วันที่คืน', title: 'วันที่คืน' });
       const btn = h('button', { class: 'btn sm', onclick: () => {
         const n = parseFloat(qn.value); if (!(n > 0) || n > left) return toast('จำนวนไม่ถูกต้อง (ค้างคืน ' + qf(left) + ')');
         if (cd.value !== 'ok' && !confirm('บันทึกว่า "' + COND[cd.value] + '" ' + qf(n) + ' ' + it.unit + '?\nจำนวนนี้จะถูกหักออกจากของที่ให้ยืมได้ (ถ้าซื้อมาแทน ให้เพิ่ม "จำนวนทั้งหมด" ที่หน้าอุปกรณ์ให้ยืม)')) return;
-        addLoan({ type: 'ret', loan: m.id, item: m.item, loc: m.loc, qty: n, cond: cd.value, name: m.name, dept: m.dept, no: m.no || '', by: cfg.user || '' });
+        const rd = rdt.value || today(); if (rd > today() || (m.date && rd < m.date)) return toast('วันที่คืนต้องอยู่ระหว่างวันที่ยืมถึงวันนี้');
+        addLoan({ type: 'ret', loan: m.id, item: m.item, loc: m.loc, qty: n, cond: cd.value, date: rd, name: m.name, dept: m.dept, no: m.no || '', by: cfg.user || '' });
         lcommit(); toast('รับคืนแล้ว: ' + lname(m.item) + ' × ' + qf(n));
       } }, 'รับคืน');
       return h('tr', {}, h('td', {}, h('b', {}, m.name || '—'), h('div', { class: 'mut', style: 'font-size:12px' }, [m.dept, m.no].filter(Boolean).join(' · '))),
         h('td', {}, lname(m.item), m.note ? h('div', { class: 'mut', style: 'font-size:12px' }, m.note) : null),
         h('td', { class: 'r num' }, qf(left) + ' ' + it.unit, left < m.qty ? h('div', { class: 'mut', style: 'font-size:12px' }, 'จาก ' + qf(m.qty)) : null),
-        h('td', {}, thDate(m.date), h('div', {}, m.due ? (isOverdue(m) ? h('span', { class: 'badge warn' }, 'เกิน ' + lateDays(m) + ' วัน (' + thDate(m.due) + ')') : h('span', { class: 'badge' }, 'คืน ' + thDate(m.due))) : h('span', { class: 'badge' }, 'ไม่กำหนด'))),
-        h('td', {}, h('div', { class: 'bar', style: 'flex-wrap:nowrap' }, qn, cd, btn)));
+        h('td', {}, thDate(m.date), h('div', {}, m.due ? (isOverdue(m) ? h('span', { class: 'badge warn' }, 'เกิน ' + lateDays(m) + ' วัน (' + thDate(m.due) + ')') : h('span', { class: 'badge' }, 'คืน ' + thDate(m.due))) : h('span', { class: 'badge' }, 'ไม่กำหนด')),
+          extInfo(m), h('button', { class: 'linkbtn', onclick: () => extendDlg(m) }, '📅 เลื่อนกำหนดคืน')),
+        h('td', {}, h('div', { class: 'bar', style: 'flex-wrap:nowrap' }, qn, cd, btn), h('div', { class: 'bar', style: 'flex-wrap:nowrap;margin-top:4px;font-size:12px' }, h('span', { class: 'mut' }, 'วันที่คืน'), rdt)));
     })))));
   page.append(card);
   return page;
 };
 
+/* ---- เลื่อนกำหนดคืน (เก็บประวัติ + เหตุผล ไว้ในรายการยืม) ---- */
+function extInfo(m) {
+  const x = m.ext || []; if (!x.length) return null; const l = x[x.length - 1];
+  return h('div', { class: 'mut', style: 'font-size:12px;margin-top:2px', title: x.map(e => thDate(e.at) + ': ' + (e.from ? thDate(e.from) : 'ไม่กำหนด') + ' → ' + (e.to ? thDate(e.to) : 'ไม่กำหนด') + ' · ' + e.why).join('\n') }, 'เลื่อนแล้ว ' + x.length + ' ครั้ง · ' + l.why);
+}
+function extendDlg(m) {
+  const base = m.due && m.due > today() ? m.due : today();
+  const nd = h('input', { type: 'date', value: addDays(base, 7), min: today() });
+  const why = h('input', { type: 'text', placeholder: 'เช่น งานซ่อมยังไม่เสร็จ / ผู้ยืมลาพักร้อน / รออะไหล่' });
+  const quick = h('div', { class: 'bar', style: 'margin-top:6px' }, [3, 7, 14, 30].map(d => h('button', { class: 'chip', onclick: () => { nd.value = addDays(base, d); } }, '+' + d + ' วัน')));
+  const hist = (m.ext || []).length ? h('details', { style: 'margin-top:12px' }, h('summary', { style: 'cursor:pointer;color:var(--act)' }, 'ประวัติการเลื่อน (' + m.ext.length + ')'),
+    h('ul', { style: 'margin:6px 0;padding-left:20px;font-size:13px' }, m.ext.map(e => h('li', {}, thDate(e.at) + ' — ' + (e.from ? thDate(e.from) : 'ไม่กำหนด') + ' → ' + (e.to ? thDate(e.to) : 'ไม่กำหนด') + ' · ' + e.why + (e.by ? ' (' + e.by + ')' : ''))))) : null;
+  openDlg('เลื่อนกำหนดคืน', h('div', {},
+    h('p', { style: 'margin:0 0 10px' }, h('b', {}, m.name || '—'), ' · ' + lname(m.item) + ' · ' + (m.no || ''), h('br'), h('span', { class: 'mut' }, 'ยืม ' + thDate(m.date) + ' · กำหนดคืนเดิม ' + (m.due ? thDate(m.due) : 'ไม่กำหนด'))),
+    field('กำหนดคืนใหม่ *', nd, quick), h('div', { style: 'height:10px' }), field('เหตุผลที่เลื่อน *', why), hist),
+    [h('button', { class: 'btn sec', onclick: closeDlg }, 'ยกเลิก'), h('button', { class: 'btn', onclick: () => {
+      const to = nd.value, w = why.value.trim();
+      if (!to) return toast('กรุณาเลือกกำหนดคืนใหม่'); if (to < today()) return toast('กำหนดคืนใหม่ต้องไม่ย้อนหลัง');
+      if (!w) { why.focus(); return toast('กรุณาใส่เหตุผลที่เลื่อนกำหนดคืน'); }
+      if (to === m.due) return toast('วันที่เท่ากับกำหนดคืนเดิม');
+      m.ext = (m.ext || []).concat([{ from: m.due || '', to, why: w, at: today(), by: cfg.user || '' }]); m.due = to;
+      const sib = LS.loans.filter(x => x !== m && x.type === 'out' && x.ref && x.ref === m.ref && lleft(x) > 0);
+      if (sib.length && confirm('ใบยืม ' + (m.no || '') + ' มีอุปกรณ์อื่นที่ยังค้างคืนอีก ' + sib.length + ' รายการ เลื่อนกำหนดคืนทั้งใบเป็นวันเดียวกันด้วยไหม?'))
+        sib.forEach(x => { x.ext = (x.ext || []).concat([{ from: x.due || '', to, why: w, at: today(), by: cfg.user || '' }]); x.due = to; });
+      closeDlg(); lcommit(); toast('เลื่อนกำหนดคืนเป็น ' + thDate(to) + ' แล้ว');
+    } }, 'บันทึกการเลื่อน')]);
+}
 /* ---- หน้า: ประวัติยืม-คืน ---- */
 PAGES.llog = function () {
   const loc = cfg.loc, G = ui.llog = ui.llog || { month: thisMonth(), type: '', q: '' }, page = h('div');
@@ -4500,11 +4585,12 @@ PAGES.llog = function () {
     list.length ? h('div', { class: 'tw', style: 'max-height:68vh' }, h('table', {}, h('thead', {}, h('tr', {}, ['วันที่', 'ประเภท', 'อุปกรณ์', 'จำนวน', 'ผู้ยืม / แผนก', 'สถานะ', ''].map((x, i) => h('th', { class: i === 3 ? 'r' : '' }, x)))),
       h('tbody', {}, list.map(m => {
         const it = litemById(m.item) || { unit: '' }, isOut = m.type === 'out';
-        const st = isOut ? (lleft(m) <= 0 ? h('span', { class: 'badge ok' }, 'คืนครบแล้ว') : isOverdue(m) ? h('span', { class: 'badge warn' }, 'ค้างคืน ' + qf(lleft(m)) + ' · เกินกำหนด') : h('span', { class: 'badge act' }, 'ค้างคืน ' + qf(lleft(m))))
+        const rets = isOut ? LS.loans.filter(x => x.type === 'ret' && x.loan === m.id).map(x => x.date).sort() : [];
+        const st = isOut ? (lleft(m) <= 0 ? h('span', { class: 'badge ok' }, 'คืนครบแล้ว ' + (rets.length ? thDate(rets[rets.length - 1]) : '')) : isOverdue(m) ? h('span', { class: 'badge warn' }, 'ค้างคืน ' + qf(lleft(m)) + ' · เกินกำหนด') : h('span', { class: 'badge act' }, 'ค้างคืน ' + qf(lleft(m))))
           : h('span', { class: 'badge' + (m.cond === 'ok' ? ' ok' : ' warn') }, COND[m.cond] || '—');
         return h('tr', {}, h('td', {}, thDate(m.date)), h('td', {}, h('span', { class: 'badge' + (isOut ? ' act' : ' ok') }, isOut ? 'ยืม' : 'คืน')),
           h('td', {}, lname(m.item), h('div', { class: 'mut', style: 'font-size:12px' }, [m.no, m.note].filter(Boolean).join(' · '))), h('td', { class: 'r' }, qf(m.qty) + ' ' + it.unit),
-          h('td', {}, m.name || '—', h('div', { class: 'mut', style: 'font-size:12px' }, m.dept || '')), h('td', {}, st, m.by && m.by !== m.name ? h('div', { class: 'mut', style: 'font-size:12px' }, 'บันทึกโดย ' + m.by) : null),
+          h('td', {}, m.name || '—', h('div', { class: 'mut', style: 'font-size:12px' }, m.dept || '')), h('td', {}, st, isOut && m.due ? h('div', { class: 'mut', style: 'font-size:12px' }, 'กำหนดคืน ' + thDate(m.due)) : null, isOut ? extInfo(m) : null, m.by && m.by !== m.name ? h('div', { class: 'mut', style: 'font-size:12px' }, 'บันทึกโดย ' + m.by) : null),
           h('td', { class: 'r' }, h('button', { class: 'btn sm danger', onclick: () => {
             const ids = isOut ? [m.id].concat(LS.loans.filter(x => x.type === 'ret' && x.loan === m.id).map(x => x.id)) : [m.id];
             if (confirm(isOut ? 'ลบรายการยืมนี้' + (ids.length > 1 ? ' และการคืนที่เกี่ยวข้อง (' + (ids.length - 1) + ' รายการ)' : '') + '?' : 'ลบรายการคืนนี้? (อุปกรณ์จะกลับเป็นค้างคืน)')) { purgeLoan(ids); toast('ลบแล้ว'); }
@@ -4746,7 +4832,7 @@ PAGES.mnew = function () {
     if (!name) return toast('กรุณากรอกชื่อผู้เบิก');
     const now = Date.now(), r = { id: uid(), ts: now, u: now, date: today(), loc, dept, other, name, note: R.note.trim(), status: 'sent', hist: [{ s: 'sent', at: now, by: name }],
       lines: R.lines.map(l => ({ item: l.it.id, code: l.it.code || '', name: l.it.name, unit: l.it.unit, qty: l.qty })), q: 1 };
-    MS.reqs.push(r); saveM(); if (isKiosk()) mAddMine(r.id);
+    MS.reqs.push(r); saveM(); if (isKiosk()) mAddMine(r.id); rememberName(name);
     ui.mnew = Object.assign(newM(), { sentId: r.id });
     if (!cfg.syncUrl) delete r.q;
     render(); mPush(); window.scrollTo(0, 0);
