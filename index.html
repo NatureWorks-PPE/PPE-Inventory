@@ -3664,12 +3664,97 @@ PAGES.order = function () {
     } }, 'สร้างใบสั่งซื้อ'), sum)));
   sumUp();
   const pos = store.orders.filter(p => p.loc === loc).sort((a, b) => b.date.localeCompare(a.date) || b.no.localeCompare(a.no));
-  page.append(h('div', { class: 'card' }, h('h2', {}, 'ใบสั่งซื้อ ', h('small', {}, pos.length + ' ใบ')), pos.length ? h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, ['เลขที่', 'วันที่', 'ผู้ขาย', 'รายการ', 'มูลค่า', 'สถานะ', ''].map((x, i) => h('th', { class: i === 4 ? 'r' : '' }, x)))),
+  page.append(h('div', { class: 'card' }, h('div', { class: 'bar', style: 'justify-content:space-between;margin-bottom:8px' }, h('h2', { style: 'margin:0' }, 'ใบสั่งซื้อ ', h('small', {}, pos.length + ' ใบ')), h('button', { class: 'btn', onclick: () => poImport(loc) }, '+ เพิ่ม PO จริง (วาง / กรอกเอง)')), pos.length ? h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, ['เลขที่', 'วันที่', 'ผู้ขาย', 'รายการ', 'มูลค่า', 'สถานะ', ''].map((x, i) => h('th', { class: i === 4 ? 'r' : '' }, x)))),
     h('tbody', {}, pos.map(p => h('tr', {}, h('td', {}, p.no), h('td', {}, thDate(p.date)), h('td', {}, p.supplier || '—'), h('td', {}, p.lines.length), h('td', { class: 'r' }, money(poTotal(p))),
       h('td', {}, p.status === 'received' ? h('span', { class: 'badge ok' }, 'รับแล้ว ' + thDate(p.receivedDate)) : h('span', { class: 'badge act' }, 'รอรับของ')),
       h('td', { class: 'r' }, h('button', { class: 'btn sm sec', onclick: () => poDialog(p.id) }, 'เปิด'))))))) : h('div', { class: 'empty' }, 'ยังไม่มีใบสั่งซื้อ')));
   return page;
 };
+/* ---------- เพิ่ม PO จริง: วางข้อความจากระบบจัดซื้อ หรือกรอกเอง ---------- */
+function poImport(loc) {
+  const items = itemsAt(loc), S = { cols: [], rows: [], map: {}, lines: [] };
+  const norm = x => String(x || '').toLowerCase().replace(/[\s\-_.,()\/\[\]#:"']+/g, '');
+  const num = x => { const t = String(x || '').replace(/[,\s฿]|บาท|thb/gi, ''); return /^-?\d+(\.\d+)?$/.test(t) ? +t : null; };
+  const no = h('input', { type: 'text', placeholder: 'เช่น 4500012345' }), dt = h('input', { type: 'date', value: today() }), sp = h('input', { type: 'text', placeholder: 'ชื่อผู้ขาย' });
+  const ta = h('textarea', { rows: 6, style: 'width:100%;font:12px monospace', placeholder: 'คัดลอกตารางรายการจากระบบ PO (ทั้งหัวตารางและรายการ) แล้ววางที่นี่ — หรือข้ามช่องนี้แล้วกด "+ เพิ่มรายการ" เพื่อกรอกเอง' });
+  const mapBox = h('div'), tbWrap = h('div'), sum = h('p', { style: 'text-align:right;margin:8px 0' });
+  function match(cells) {
+    const cc = S.map.code >= 0 ? [cells[S.map.code]] : cells;
+    for (const c of cc) { const n = norm(c); if (n.length > 2) { const it = items.find(i => i.code && norm(i.code) === n); if (it) return it; } }
+    const txt = norm(S.map.name >= 0 ? cells[S.map.name] : cells.join(' ')); if (!txt) return null;
+    let best = null, bs = 0;
+    items.forEach(i => { const n = norm(i.name); if (!n) return; let sc = n === txt ? 3 : (txt.includes(n) || n.includes(txt)) ? 1 + Math.min(n.length, txt.length) / Math.max(n.length, txt.length) : 0;
+      if (!sc) { const tw = String(S.map.name >= 0 ? cells[S.map.name] : cells.join(' ')).toLowerCase().split(/\s+/).filter(w => w.length > 1), iw = i.name.toLowerCase().split(/\s+/).filter(w => w.length > 1); const hit = iw.filter(w => tw.includes(w)).length; if (iw.length && hit / iw.length >= .6) sc = hit / iw.length; }
+      if (sc > bs) { bs = sc; best = i; } });
+    return best;
+  }
+  function parse() {
+    const raw = ta.value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    let rows = raw.map(l => (l.includes('\t') ? l.split('\t') : l.split(/\s{2,}|\s*\|\s*/)).map(c => c.trim()));
+    if (!rows.length) return toast('ยังไม่ได้วางข้อความ');
+    const W = Math.max(...rows.map(r => r.length)); rows = rows.map(r => { while (r.length < W) r.push(''); return r; });
+    const hdr = rows[0].filter(c => num(c) != null).length === 0 && rows.length > 1 && /qty|quan|จำนวน|รายการ|desc|item|price|ราคา|code|รหัส|material|unit|หน่วย/i.test(rows[0].join(' '));
+    S.cols = hdr ? rows[0].map((c, i) => c || 'คอลัมน์ ' + (i + 1)) : rows[0].map((c, i) => 'คอลัมน์ ' + (i + 1));
+    S.rows = hdr ? rows.slice(1) : rows;
+    const m = { code: -1, name: -1, qty: -1, cost: -1 };
+    if (hdr) S.cols.forEach((c, i) => { const t = c.toLowerCase();
+      if (m.qty < 0 && /qty|quan|จำนวน/.test(t)) m.qty = i;
+      else if (m.cost < 0 && /price|ราคา/.test(t) && !/total|รวม|amount|net/.test(t)) m.cost = i;
+      else if (m.code < 0 && /code|รหัส|material ?no|part/.test(t)) m.code = i;
+      else if (m.name < 0 && /desc|item|รายการ|ชื่อ|material|product|สินค้า/.test(t)) m.name = i; });
+    const r0 = S.rows[0] || [], nc = r0.map((c, i) => num(c) != null ? i : -1).filter(i => i >= 0 && i !== m.code);
+    if (m.qty < 0 || m.cost < 0) {
+      let done = false;
+      for (const a of nc) for (const b of nc) for (const c of nc) if (!done && a < b && c !== a && c !== b) { const x = num(r0[a]), y = num(r0[b]), z = num(r0[c]); if (z && Math.abs(x * y - z) < .02 * z + .01) { if (m.qty < 0) m.qty = a; if (m.cost < 0) m.cost = b; done = true; } }
+      const rest = nc.filter(i => i !== m.qty && i !== m.cost && !(i === 0 && Number.isInteger(num(r0[0])) && num(r0[0]) < 1000 && nc.length > 2));
+      if (m.qty < 0 && rest.length) m.qty = rest.shift(); if (m.cost < 0 && rest.length) m.cost = rest.shift();
+    }
+    if (m.name < 0) { let bl = 0; S.cols.forEach((_, i) => { if (i === m.code || nc.includes(i)) return; const L = S.rows.reduce((s, r) => s + String(r[i] || '').length, 0); if (L > bl) { bl = L; m.name = i; } }); }
+    S.map = m; build();
+  }
+  function build() {
+    S.lines = S.rows.map(r => { const it = match(r), q = S.map.qty >= 0 ? num(r[S.map.qty]) : null, c = S.map.cost >= 0 ? num(r[S.map.cost]) : null;
+      return { src: r.filter(Boolean).join(' · '), item: it ? it.id : '', qty: q > 0 ? q : 1, cost: c != null ? c : (it ? it.cost : 0) }; });
+    drawMap(); draw();
+  }
+  function drawMap() {
+    mapBox.textContent = ''; if (!S.cols.length) return;
+    const opt = [['-1', '— ไม่มี —']].concat(S.cols.map((c, i) => [String(i), c]));
+    mapBox.append(h('p', { class: 'hint', style: 'margin:10px 0 4px' }, 'แอปเดาคอลัมน์ให้แล้ว ถ้าไม่ถูกให้เลือกใหม่:'), h('div', { class: 'row' },
+      [['code', 'รหัสสินค้า'], ['name', 'ชื่อรายการ'], ['qty', 'จำนวน'], ['cost', 'ราคา/หน่วย']].map(([k, l]) => field(l, selectEl(opt, String(S.map[k]), v => { S.map[k] = +v; build(); })))));
+  }
+  function draw() {
+    tbWrap.textContent = '';
+    const opts = [['', '— ไม่จับคู่ (ข้ามบรรทัดนี้) —']].concat(items.map(i => [i.id, (i.code ? i.code + ' · ' : '') + i.name]));
+    if (!S.lines.length) { tbWrap.append(h('div', { class: 'empty' }, 'ยังไม่มีรายการ')); sum.textContent = ''; return; }
+    tbWrap.append(h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, ['รายการ PPE ในระบบ', 'จำนวน', 'ราคา/หน่วย', ''].map((x, i) => h('th', { class: i === 1 || i === 2 ? 'r' : '' }, x)))),
+      h('tbody', {}, S.lines.map((l, k) => {
+        const it = items.find(i => i.id === l.item);
+        const sel = selectEl(opts, l.item, v => { l.item = v; const n = items.find(i => i.id === v); if (n && !l.cost) l.cost = n.cost; draw(); }, { style: 'min-width:220px' + (l.item ? '' : ';border-color:#b42318') });
+        const q = h('input', { type: 'number', min: '0', step: 'any', value: l.qty, style: 'width:80px' }); q.addEventListener('input', () => { l.qty = +q.value; tot(); });
+        const c = h('input', { type: 'number', min: '0', step: '0.01', value: l.cost, style: 'width:100px' }); c.addEventListener('input', () => { l.cost = +c.value; tot(); });
+        return h('tr', {}, h('td', {}, sel, l.src ? h('div', { class: 'mut', style: 'font-size:11px;margin-top:2px' }, 'จาก PO: ' + l.src) : null),
+          h('td', { class: 'r' }, q, it ? h('div', { class: 'mut', style: 'font-size:11px' }, it.unit) : null), h('td', { class: 'r' }, c),
+          h('td', {}, h('button', { class: 'btn sm sec', 'aria-label': 'ลบบรรทัด', onclick: () => { S.lines.splice(k, 1); draw(); } }, '✕')));
+      })))));
+    tot();
+  }
+  function tot() { const ok = S.lines.filter(l => l.item && l.qty > 0), miss = S.lines.length - ok.length;
+    sum.textContent = ok.length + ' รายการ · รวม ' + money(ok.reduce((s, l) => s + l.qty * l.cost, 0)) + ' บาท' + (miss ? ' · ⚠ ' + miss + ' บรรทัดยังไม่จับคู่ (จะไม่ถูกบันทึก)' : ''); }
+  const body = h('div', {}, h('div', { class: 'row' }, field('เลขที่ PO (จากระบบจัดซื้อ) *', no), field('วันที่ PO', dt), field('ผู้ขาย', sp)),
+    field('วางรายการจาก PO', ta), h('div', { class: 'bar' }, h('button', { class: 'btn sec', onclick: parse }, 'อ่านข้อมูลที่วาง'),
+      h('button', { class: 'btn sec', onclick: () => { S.lines.push({ src: '', item: '', qty: 1, cost: 0 }); draw(); } }, '+ เพิ่มรายการ (กรอกเอง)')),
+    mapBox, h('h3', { style: 'margin:14px 0 6px' }, 'รายการที่จะบันทึก'), tbWrap, sum);
+  draw();
+  openDlg('เพิ่มใบสั่งซื้อจาก PO จริง · ' + locName(loc), body, [h('button', { class: 'btn sec', onclick: closeDlg }, 'ยกเลิก'), h('button', { class: 'btn', onclick: () => {
+    const n = no.value.trim(); if (!n) { no.focus(); return toast('กรุณาใส่เลขที่ PO'); }
+    const ok = S.lines.filter(l => l.item && l.qty > 0); if (!ok.length) return toast('ยังไม่มีรายการที่จับคู่กับ PPE ในระบบ');
+    if (store.orders.some(p => p.no === n) && !confirm('มีใบสั่งซื้อเลข ' + n + ' อยู่แล้ว บันทึกซ้ำหรือไม่?')) return;
+    store.orders.push({ id: uid(), no: n, loc, date: dt.value || today(), supplier: sp.value.trim(), status: 'open', by: cfg.user || '', src: 'real',
+      lines: ok.map(l => { const i = items.find(x => x.id === l.item); return { item: i.id, name: i.name, unit: i.unit, qty: l.qty, cost: l.cost }; }) });
+    closeDlg(); commit(); toast('บันทึกใบสั่งซื้อ ' + n + ' แล้ว');
+  } }, 'บันทึกใบสั่งซื้อ')]);
+}
 function poDialog(id) {
   const p = store.orders.find(x => x.id === id); if (!p) return;
   const rd = h('input', { type: 'date', value: today() });
